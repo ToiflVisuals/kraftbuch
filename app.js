@@ -29,6 +29,7 @@ const ICON = {
   chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></svg>',
   cam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.5-2h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.8" r="3.3"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2"/></svg>',
 };
@@ -206,6 +207,7 @@ function exCard(ex) {
         <div class="ex-sub">${esc(ex.group || '')}${ex.note ? ' · ' + esc(ex.note) : ''}</div>
       </div>
       <button class="more-btn" data-act="ex-menu" aria-label="Optionen für ${esc(ex.name)}">${ICON.more}</button>
+      <button class="drag-handle" aria-label="${esc(ex.name)} verschieben">${ICON.grip}</button>
     </div>
     <div class="log-table">
       <div class="lt-head"><span></span><span>kg</span><span>Sätze</span><span>Wdh</span><span></span></div>
@@ -700,6 +702,73 @@ document.addEventListener('change', async (ev) => {
     catch { toast('Das Foto konnte nicht geladen werden'); }
   }
 });
+
+/* ================= Übungen verschieben (Drag-and-Drop) ================= */
+// Am Griff festhalten und ziehen. Während des Ziehens klappen alle Karten zu,
+// damit man die Reihenfolge auf einen Blick sieht.
+let drag = null;
+function dragPlace(y) {
+  const { card } = drag;
+  const others = [...document.querySelectorAll('#view .ex-card')].filter((c) => c !== card);
+  card.style.transform = '';
+  // Mitte der gezogenen Karte entscheidet, wo sie landet
+  const mid = y - drag.dy + card.offsetHeight / 2;
+  const before = others.find((c) => { const r = c.getBoundingClientRect(); return mid < r.top + r.height / 2; });
+  if (before) { if (card.nextElementSibling !== before) before.before(card); }
+  else if (others.length && others[others.length - 1].nextElementSibling !== card) others[others.length - 1].after(card);
+  const r = card.getBoundingClientRect();
+  card.style.transform = `translateY(${y - drag.dy - r.top}px)`;
+}
+function dragScroll() {
+  if (!drag) return;
+  const y = drag.y, edge = 90, h = window.innerHeight;
+  const v = y < edge ? -Math.ceil((edge - y) / 6) : y > h - edge - 70 ? Math.ceil((y - (h - edge - 70)) / 6) : 0;
+  if (v) { window.scrollBy(0, v); dragPlace(y); }
+  drag.raf = requestAnimationFrame(dragScroll);
+}
+document.addEventListener('pointerdown', (ev) => {
+  const handle = ev.target.closest('.drag-handle');
+  if (!handle || drag) return;
+  ev.preventDefault();
+  const card = handle.closest('.ex-card');
+  const before = card.getBoundingClientRect().top;
+  document.body.classList.add('reordering');
+  // Karte nach dem Zuklappen wieder unter den Finger holen
+  window.scrollBy(0, card.getBoundingClientRect().top - before);
+  const r = card.getBoundingClientRect();
+  drag = { card, dy: ev.clientY - r.top, y: ev.clientY, start: [...document.querySelectorAll('#view .ex-card')].map((c) => c.dataset.ex).join() };
+  card.classList.add('dragging');
+  try { handle.setPointerCapture(ev.pointerId); } catch {}
+  if (navigator.vibrate) try { navigator.vibrate(10); } catch {}
+  dragPlace(ev.clientY);
+  drag.raf = requestAnimationFrame(dragScroll);
+});
+document.addEventListener('pointermove', (ev) => {
+  if (!drag) return;
+  ev.preventDefault();
+  drag.y = ev.clientY;
+  dragPlace(ev.clientY);
+}, { passive: false });
+function dragEnd() {
+  if (!drag) return;
+  cancelAnimationFrame(drag.raf);
+  const ids = [...document.querySelectorAll('#view .ex-card')].map((c) => c.dataset.ex);
+  const changed = ids.join() !== drag.start;
+  drag.card.classList.remove('dragging');
+  drag.card.style.transform = '';
+  document.body.classList.remove('reordering');
+  drag = null;
+  const day = curDay();
+  if (changed && day) {
+    day.exIds = [...ids, ...day.exIds.filter((id) => !ids.includes(id))];
+    touchPlan();
+    toast('Reihenfolge gespeichert');
+  }
+  render();
+}
+document.addEventListener('pointerup', dragEnd);
+document.addEventListener('pointercancel', dragEnd);
+document.addEventListener('touchmove', (ev) => { if (drag) ev.preventDefault(); }, { passive: false });
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && $('#sheetRoot').innerHTML) closeSheet();

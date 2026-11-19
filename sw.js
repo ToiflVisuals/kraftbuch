@@ -1,6 +1,6 @@
 // Offline-Unterstützung: App-Dateien und Schriften landen im Cache.
 // Eigene Dateien: erst Netz (max. 2,5 s), sonst Cache. Schriften und Firebase-SDK: Cache zuerst.
-const CACHE = 'kraftbuch-v4';
+const CACHE = 'kraftbuch-v5';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
