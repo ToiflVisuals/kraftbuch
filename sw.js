@@ -1,14 +1,14 @@
 // Offline-Unterstützung: App-Dateien und Schriften landen im Cache.
-// Eigene Dateien: erst Netz (max. 2,5 s), sonst Cache. Schriften und Firebase-SDK: Cache zuerst.
-const CACHE = 'kraftbuch-v5';
+// Eigene Dateien: erst Netz (max. 2,5 s), sonst Cache. Schriften: Cache zuerst.
+const CACHE = 'kraftbuch-v6';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
-const CACHE_FIRST_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'www.gstatic.com'];
+const CACHE_FIRST_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -27,14 +27,14 @@ self.addEventListener('fetch', (e) => {
   } else if (CACHE_FIRST_HOSTS.includes(url.hostname)) {
     e.respondWith(cacheFirst(req));
   }
-  // Alles andere (Firestore, Anmeldung) geht direkt ans Netz.
 });
 
 async function networkFirst(req) {
   const cache = await caches.open(CACHE);
   try {
     const res = await Promise.race([
-      fetch(req),
+      // no-cache: immer beim Server nachfragen, sonst liefert GitHub bis zu 10 Minuten lang die alte Version
+      fetch(req.url, { cache: 'no-cache' }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
     ]);
     if (res.ok) cache.put(req, res.clone());

@@ -30,12 +30,13 @@ const ICON = {
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1-4.5L16.2 4.3a1.8 1.8 0 0 1 2.5 0l1 1a1.8 1.8 0 0 1 0 2.5L8.5 19z"/><path d="m14.5 6 3.5 3.5"/></svg>',
   cam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.5-2h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.8" r="3.3"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2"/></svg>',
 };
 
 /* ================= Speicher ================= */
-const LS = { state: 'kb2.state', entries: 'kb2.entries', tab: 'kb2.tab', day: 'kb2.day', metric: 'kb2.metric', period: 'kb2.period', backup: 'kb2.lastBackup' };
+const LS = { state: 'kb2.state', entries: 'kb2.entries', tab: 'kb2.tab', day: 'kb2.day', metric: 'kb2.metric', period: 'kb2.period', backup: 'kb2.lastBackup', session: 'kb2.session', train: 'kb2.train', drafts: 'kb2.drafts' };
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
@@ -96,8 +97,13 @@ const S = {
   metric: lsGet(LS.metric, 'weight'),
   period: lsGet(LS.period, 'm'),
   open: new Set(), // Übungen mit aufgeklapptem Archiv
+  train: lsGet(LS.train, false), // geführtes Training statt Übungsliste
+  session: lsGet(LS.session, null), // { dayId, since, touched, later, pick }
+  drafts: lsGet(LS.drafts, {}), // angefangene, noch nicht bestätigte Eingaben von heute
+  ret: null,
 };
 if (S.day && !S.state.days.some((d) => d.id === S.day)) S.day = null;
+if (!S.day) S.train = false;
 lsSet(LS.state, S.state);
 
 const saveState = () => lsSet(LS.state, S.state);
@@ -110,6 +116,35 @@ const entriesFor = (exId) => S.entries.filter((e) => e.exId === exId).sort((a, b
 const vol = (e) => (e.w ?? 0) * (e.sets ?? 1) * (e.reps ?? 0);
 const inPlan = (id) => S.state.days.some((d) => d.exIds.includes(id));
 const lastActivity = (day) => Math.max(0, ...S.entries.filter((e) => day.exIds.includes(e.exId)).map((e) => e.date));
+
+/* ================= Geführtes Training ================= */
+// Erledigt ist eine Übung, sobald sie seit Beginn (normal: seit heute früh) einen Eintrag hat.
+// Dadurch merkt sich die App den Stand auch, wenn sie zwischendurch geschlossen wird.
+const SESSION_MAX = 6 * 3600000;
+const saveSession = () => lsSet(LS.session, S.session);
+const sessionFresh = () => !!S.session && Date.now() - S.session.touched < SESSION_MAX;
+function touchSession() { if (S.session) { S.session.touched = Date.now(); saveSession(); } }
+function ensureSession(day) {
+  if (S.session?.dayId === day.id && sessionFresh()) return S.session;
+  S.session = { dayId: day.id, since: startOfDay(Date.now()), touched: Date.now(), later: [], pick: null };
+  saveSession();
+  return S.session;
+}
+function trainState(day) {
+  const ses = ensureSession(day);
+  const ids = day.exIds.filter(exById);
+  const entryOf = (id) => entriesFor(id).find((e) => e.date >= ses.since);
+  const done = ids.filter(entryOf);
+  const open = ids.filter((id) => !done.includes(id));
+  let queue = [...open.filter((id) => !ses.later.includes(id)), ...ses.later.filter((id) => open.includes(id))];
+  if (ses.pick && queue.includes(ses.pick)) queue = [ses.pick, ...queue.filter((id) => id !== ses.pick)];
+  return { ids, done, queue, entryOf };
+}
+const isTrain = () => S.train && S.tab === 'training' && !!S.day;
+
+// Angefangene Eingaben überleben Umsortieren, Fotos und das Schließen der App
+const draftFor = (id) => { const d = S.drafts[id]; return d && d.day === startOfDay(Date.now()) ? d : {}; };
+const saveDrafts = () => lsSet(LS.drafts, S.drafts);
 
 /* ================= Rendering ================= */
 function setHeader(eyebrow, title, back = false) {
@@ -128,6 +163,10 @@ function render() {
     setHeader('Alle Übungen', 'Fortschritt');
     v.innerHTML = viewProgress();
     renderExList();
+  } else if (isTrain()) {
+    const day = dayById(S.day);
+    setHeader('Training', day.name || 'Ohne Namen', true);
+    v.innerHTML = viewTrain(day);
   } else if (S.day) {
     const day = dayById(S.day);
     setHeader('Trainingstag', day.name || 'Ohne Namen', true);
@@ -138,9 +177,9 @@ function render() {
   }
 }
 
-function go(tab, day = null) {
-  S.tab = tab; S.day = day;
-  lsSet(LS.tab, tab); lsSet(LS.day, day);
+function go(tab, day = null, train = false) {
+  S.tab = tab; S.day = day; S.train = train;
+  lsSet(LS.tab, tab); lsSet(LS.day, day); lsSet(LS.train, train);
   render();
   window.scrollTo(0, 0);
 }
@@ -154,18 +193,24 @@ function viewDays() {
       <button class="btn btn-secondary" data-act="export">Jetzt sichern</button></div>`;
   }
   if (S.state.example) {
-    html += `<div class="banner"><p>Das ist ein <b>Beispielplan</b>. Öffne einen Tag, um Übungen hinzuzufügen oder zu löschen. Über ⋯ oben rechts benennst du den Tag um.</p>
+    html += `<div class="banner"><p>Das ist ein <b>Beispielplan</b>. Tippe bei einem Tag auf den Stift, um ihn umzubenennen und Übungen hinzuzufügen oder zu entfernen.</p>
       <button class="btn btn-secondary" data-act="example-ok">Verstanden</button></div>`;
   }
   html += `<div class="section">`;
   for (const day of S.state.days) {
     const last = lastActivity(day);
-    const names = day.exIds.map((id) => exById(id)?.name).filter(Boolean).slice(0, 3).join(', ');
-    html += `<button class="day-card" data-act="open-day" data-day="${day.id}">
-      <div class="day-name">${esc(day.name || 'Ohne Namen')}</div>
-      <div class="day-go">${ICON.chev}</div>
-      <div class="day-meta">${plural(day.exIds.length, 'Übung', 'Übungen')}${last ? ' · zuletzt ' + esc(relDay(last)) : ''}${names ? ' · ' + esc(names) : ''}</div>
-    </button>`;
+    const active = S.session?.dayId === day.id && sessionFresh() ? trainState(day) : null;
+    const running = active && active.done.length > 0 && active.queue.length > 0;
+    const meta = running ? `${active.done.length} von ${active.ids.length} erledigt · weiter mit ${exById(active.queue[0]).name}`
+      : `${plural(day.exIds.length, 'Übung', 'Übungen')}${last ? ' · zuletzt ' + relDay(last) : ''}`;
+    html += `<div class="day-card${running ? ' running' : ''}">
+      <button class="dc-main" data-act="start-day" data-day="${day.id}">
+        <span class="day-name">${esc(day.name || 'Ohne Namen')}</span>
+        <span class="day-meta">${esc(meta)}</span>
+      </button>
+      <button class="dc-edit" data-act="open-day" data-day="${day.id}" aria-label="${esc(day.name)} bearbeiten">${ICON.pen}</button>
+      <button class="dc-start" data-act="start-day" data-day="${day.id}" aria-label="${esc(day.name)} ${running ? 'fortsetzen' : 'starten'}">${running ? 'Weiter' : 'Starten'}</button>
+    </div>`;
   }
   if (!S.state.days.length) html += `<div class="empty"><strong>Noch kein Trainingstag</strong>Leg unten deinen ersten Tag an, z. B. „Oberkörper“.</div>`;
   html += `<button class="btn-dashed" data-act="day-add">+ Trainingstag hinzufügen</button></div>`;
@@ -176,6 +221,7 @@ function viewDays() {
 function viewDay(day) {
   let html = `<div class="section">`;
   if (!day.exIds.length) html += `<div class="empty"><strong>Noch keine Übung</strong>Füge unten deine erste Übung hinzu.</div>`;
+  else html += `<button class="btn btn-primary btn-block" data-act="start-day" data-day="${day.id}">Training starten</button>`;
   for (const exId of day.exIds) {
     const ex = exById(exId); if (!ex) continue;
     html += exCard(ex);
@@ -184,7 +230,42 @@ function viewDay(day) {
   return html;
 }
 
+/* ---------- Training: immer die aktuelle Übung oben ---------- */
+function viewTrain(day) {
+  const { ids, done, queue, entryOf } = trainState(day);
+  const doneRow = (id) => {
+    const e = entryOf(id);
+    return `<button class="tr-row done" data-act="entry" data-entry="${e.id}"><span class="tr-ic">${ICON.check}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${e.w != null ? fmt(e.w) + ' kg · ' : ''}${e.sets ?? '–'} × ${e.reps ?? '–'}</span></button>`;
+  };
+  let html = `<div class="tr-bar" role="img" aria-label="${done.length} von ${ids.length} Übungen erledigt">${ids.map((id) => `<i class="${done.includes(id) ? 'on' : id === queue[0] ? 'now' : ''}"></i>`).join('')}</div>`;
+  if (!queue.length) {
+    html += `<div class="tr-finish"><div class="tr-check">${ICON.check}</div><h2>${esc(day.name)} geschafft</h2><p class="muted">${plural(ids.length, 'Übung', 'Übungen')} eingetragen.</p>
+      <button class="btn btn-primary btn-block" data-act="train-end">Zur Übersicht</button>
+      <button class="btn btn-ghost" data-act="train-again">Diesen Tag heute noch einmal trainieren</button></div>`;
+  } else {
+    html += `<div class="tr-now"><span class="section-title">Jetzt · Übung ${done.length + 1} von ${ids.length}</span>${queue.length > 1 ? '<button class="tr-later" data-act="train-later">Später machen</button>' : ''}</div>${exCard(exById(queue[0]))}`;
+    if (queue.length > 1) html += `<div class="tr-sec"><h2 class="section-title">Danach</h2><div class="tr-list">${queue.slice(1).map((id, i) => {
+      const last = entriesFor(id)[0];
+      return `<button class="tr-row" data-act="train-pick" data-id="${id}"><span class="tr-ic">${picHTML(exById(id)) || `<b>${done.length + i + 2}</b>`}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${last ? (last.w != null ? fmt(last.w) + ' kg' : (last.reps ?? '–') + ' Wdh') : ''}</span></button>`;
+    }).join('')}</div></div>`;
+  }
+  if (done.length) html += `<div class="tr-sec"><h2 class="section-title">Erledigt</h2><div class="tr-list">${done.map(doneRow).join('')}</div></div>`;
+  return html;
+}
+function okLabel(last, typed, isLast) {
+  if (!typed && last && last.reps != null) return `Wie letztes Mal: ${last.w != null ? fmt(last.w) + ' kg · ' : ''}${last.sets ?? '–'} × ${last.reps}`;
+  return isLast ? 'Bestätigen und fertig' : 'Bestätigen und weiter';
+}
+function updateOk(card) {
+  const b = card?.querySelector('.train-ok'); if (!b) return;
+  const typed = [...card.querySelectorAll('.lt-in')].some((i) => i.value.trim() !== '');
+  b.textContent = okLabel(entriesFor(card.dataset.ex)[0], typed, b.dataset.last === '1');
+}
+
 function exCard(ex) {
+  const train = isTrain();
+  const dr = draftFor(ex.id);
+  const isLast = train && trainState(dayById(S.day)).queue.length === 1;
   const all = entriesFor(ex.id);
   const recent = all.slice(0, 3), archive = all.slice(3);
   const last = all[0];
@@ -197,7 +278,7 @@ function exCard(ex) {
       <span class="lr-v">${e.reps ?? '–'}</span>
       <span></span>
     </button>`;
-  return `<section class="ex-card" data-ex="${ex.id}">
+  return `<section class="ex-card${train ? ' train' : ''}" data-ex="${ex.id}">
     <div class="ex-head">
       <button class="ex-photo${pic ? ' has' : ''}" data-act="photo" aria-label="${pic ? 'Foto vom Gerät ansehen' : 'Foto vom Gerät hinzufügen'}">
         ${pic || ICON.cam}
@@ -207,17 +288,18 @@ function exCard(ex) {
         <div class="ex-sub">${esc(ex.group || '')}${ex.note ? ' · ' + esc(ex.note) : ''}</div>
       </div>
       <button class="more-btn" data-act="ex-menu" aria-label="Optionen für ${esc(ex.name)}">${ICON.more}</button>
-      <button class="drag-handle" aria-label="${esc(ex.name)} verschieben">${ICON.grip}</button>
+      ${train ? '' : `<button class="drag-handle" aria-label="${esc(ex.name)} verschieben">${ICON.grip}</button>`}
     </div>
     <div class="log-table">
       <div class="lt-head"><span></span><span>kg</span><span>Sätze</span><span>Wdh</span><span></span></div>
       <div class="lt-new">
         <span class="lr-date new">Neu</span>
-        <input class="lt-in" id="w-${ex.id}" data-f="w" inputmode="decimal" autocomplete="off" placeholder="${last?.w != null ? esc(fmt(last.w)) : 'kg'}" aria-label="Gewicht in kg">
-        <input class="lt-in" id="s-${ex.id}" data-f="sets" inputmode="numeric" autocomplete="off" placeholder="${last?.sets != null ? esc(last.sets) : '–'}" aria-label="Sätze">
-        <input class="lt-in" id="r-${ex.id}" data-f="reps" inputmode="numeric" autocomplete="off" placeholder="${last?.reps != null ? esc(last.reps) : '–'}" aria-label="Wiederholungen">
-        <button class="lt-save" data-act="save" aria-label="Eintrag speichern">${ICON.check}</button>
+        <input class="lt-in" id="w-${ex.id}" data-f="w" value="${esc(dr.w || '')}" inputmode="decimal" autocomplete="off" placeholder="${last?.w != null ? esc(fmt(last.w)) : 'kg'}" aria-label="Gewicht in kg">
+        <input class="lt-in" id="s-${ex.id}" data-f="sets" value="${esc(dr.sets || '')}" inputmode="numeric" autocomplete="off" placeholder="${last?.sets != null ? esc(last.sets) : '–'}" aria-label="Sätze">
+        <input class="lt-in" id="r-${ex.id}" data-f="reps" value="${esc(dr.reps || '')}" inputmode="numeric" autocomplete="off" placeholder="${last?.reps != null ? esc(last.reps) : '–'}" aria-label="Wiederholungen">
+        ${train ? '' : `<button class="lt-save" data-act="save" aria-label="Eintrag speichern">${ICON.check}</button>`}
       </div>
+      ${train ? `<button class="btn btn-primary btn-block train-ok" data-act="save" data-last="${isLast ? 1 : 0}">${esc(okLabel(last, !!(dr.w || dr.sets || dr.reps), isLast))}</button>` : ''}
       ${recent.map(row).join('')}
       ${!all.length ? `<p class="lt-empty">Noch kein Eintrag. Trag oben ein, was du heute geschafft hast.</p>` : ''}
     </div>
@@ -545,18 +627,36 @@ function saveEntry(card) {
     return n == null ? null : isInt ? Math.round(n) : n;
   };
   const typed = ['w', 'sets', 'reps'].some((f) => get(f).value.trim() !== '');
-  if (!typed) { toast('Trag zuerst ein, was du heute gemacht hast'); get('w').focus(); return; }
+  const train = isTrain();
+  const prev = entriesFor(exId)[0];
+  if (!typed && !(train && prev && prev.reps != null)) { toast('Trag zuerst ein, was du heute gemacht hast'); get('w').focus(); return; }
   const entry = { id: uid(), exId, date: Date.now(), w: val('w'), sets: val('sets', true), reps: val('reps', true) };
+  if (train && entry.reps == null) { toast('Trag noch die Wiederholungen ein'); get('reps').focus(); return; }
   const prevBest = Math.max(0, ...entriesFor(exId).map((e) => e.w ?? 0));
   S.entries.push(entry); saveEntries();
   if (S.state.example) { S.state.example = false; saveState(); }
-  card.outerHTML = exCard(exById(exId));
+  delete S.drafts[exId]; saveDrafts();
   if (navigator.vibrate) try { navigator.vibrate(12); } catch {}
-  toast(prevBest && entry.w > prevBest ? `Neuer Bestwert: ${fmt(entry.w)} kg` : 'Gespeichert');
+  const best = prevBest && entry.w > prevBest ? `Neuer Bestwert: ${fmt(entry.w)} kg` : '';
+  if (train) {
+    document.activeElement?.blur?.();
+    S.session.pick = null; S.session.later = S.session.later.filter((x) => x !== exId); touchSession();
+    const next = trainState(curDay()).queue[0];
+    render(); window.scrollTo(0, 0);
+    toast(best || (next ? `Gespeichert. Weiter: ${exById(next).name}` : 'Gespeichert'));
+  } else {
+    card.outerHTML = exCard(exById(exId));
+    toast(best || 'Gespeichert');
+  }
 }
 
 const actions = {
-  tab: (el) => go(el.dataset.tab),
+  tab: (el) => {
+    const t = el.dataset.tab;
+    if (t === 'fortschritt') { if (S.tab !== t) S.ret = S.day ? [S.day, S.train] : null; return go(t); }
+    const r = S.tab === 'fortschritt' && S.ret && dayById(S.ret[0]) ? S.ret : null;
+    S.ret = null; r ? go('training', ...r) : go('training');
+  },
   back: () => go('training'),
   settings: () => openSettings(),
   'sheet-close': () => closeSheet(),
@@ -565,6 +665,20 @@ const actions = {
 
   // Tage
   'open-day': (el) => go('training', el.dataset.day),
+  'start-day': (el) => {
+    const day = dayById(el.dataset.day);
+    if (!day.exIds.some(exById)) return go('training', day.id);
+    ensureSession(day); touchSession(); go('training', day.id, true);
+  },
+  'train-later': () => {
+    const id = trainState(curDay()).queue[0];
+    S.session.pick = null; S.session.later = [...S.session.later.filter((x) => x !== id), id]; touchSession();
+    render(); window.scrollTo(0, 0);
+  },
+  'train-pick': (el) => { S.session.pick = el.dataset.id; touchSession(); render(); window.scrollTo(0, 0); },
+  'train-again': () => { S.session = { dayId: S.day, since: Date.now(), touched: Date.now(), later: [], pick: null }; saveSession(); render(); window.scrollTo(0, 0); },
+  'train-end': () => { S.session = null; saveSession(); closeSheet(); go('training'); },
+  'train-plan': () => { closeSheet(); go('training', S.day); },
   'day-add': () => {
     const day = { id: uid(), name: `Tag ${S.state.days.length + 1}`, exIds: [] };
     S.state.days.push(day); touchPlan(); go('training', day.id);
@@ -572,6 +686,11 @@ const actions = {
   },
   'day-menu': () => {
     const day = curDay();
+    if (isTrain()) return openSheet(`${sheetHead(day.name, 'Training')}<div class="menu-list">
+      <button data-act="train-plan">Alle Übungen anzeigen und bearbeiten</button>
+      <button data-act="ex-add">Übung hinzufügen</button>
+      <button data-act="train-end">Training beenden</button></div>
+      <p class="small muted">Alles, was du schon bestätigt hast, ist gespeichert. Startest du den Tag heute noch einmal, machst du bei der ersten offenen Übung weiter.</p>`);
     openSheet(`${sheetHead(day.name, 'Trainingstag')}<div class="menu-list">
       <button data-act="day-rename">Umbenennen</button>
       <button data-act="day-move" data-dir="-1">In der Liste nach oben</button>
@@ -689,6 +808,9 @@ document.addEventListener('input', (ev) => {
   else if (t.classList.contains('lt-in')) {
     const clean = t.value.replace(t.dataset.f === 'w' ? /[^\d.,]/g : /[^\d]/g, '');
     if (clean !== t.value) t.value = clean;
+    const card = t.closest('.ex-card'), id = card.dataset.ex;
+    S.drafts[id] = { ...draftFor(id), day: startOfDay(Date.now()), [t.dataset.f]: clean };
+    saveDrafts(); updateOk(card);
   }
 });
 
@@ -820,6 +942,7 @@ async function importData(file) {
     if (!ok) return;
     S.state = data.state; S.entries = data.entries;
     saveState(); saveEntries();
+    S.session = null; S.drafts = {}; saveSession(); saveDrafts();
     await IDB.clear().catch(() => {});
     photos.forEach((u) => URL.revokeObjectURL(u)); photos.clear();
     for (const [k, d] of Object.entries(data.photos || {})) await setPhoto(k, await (await fetch(d)).blob());
@@ -828,6 +951,12 @@ async function importData(file) {
 }
 
 /* ================= Start ================= */
+// Ein altes Training (länger als 6 Stunden her) nicht wieder öffnen
+function leaveStale() { if (S.train && !sessionFresh()) { S.session = null; saveSession(); S.train = false; lsSet(LS.train, false); if (S.tab === 'training') { S.day = null; lsSet(LS.day, null); } return true; } return false; }
+for (const k of Object.keys(S.drafts)) if (S.drafts[k].day !== startOfDay(Date.now())) delete S.drafts[k];
+saveDrafts();
+leaveStale();
+document.addEventListener('visibilitychange', () => { if (!document.hidden && leaveStale()) render(); });
 render();
 loadPhotos().then(() => { if (photos.size) render(); });
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
