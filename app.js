@@ -94,7 +94,7 @@ const S = {
   entries: lsGet(LS.entries, []),
   tab: lsGet(LS.tab, 'training'),
   day: lsGet(LS.day, null),
-  metric: lsGet(LS.metric, 'weight'),
+  metric: ['all', 'weight', 'reps'].includes(lsGet(LS.metric, '')) ? lsGet(LS.metric, '') : 'all',
   period: lsGet(LS.period, 'm'),
   open: new Set(), // Übungen mit aufgeklapptem Archiv
   train: lsGet(LS.train, false), // geführtes Training statt Übungsliste
@@ -113,7 +113,12 @@ const saveEntries = () => lsSet(LS.entries, S.entries);
 const exById = (id) => S.state.exercises.find((e) => e.id === id);
 const dayById = (id) => S.state.days.find((d) => d.id === id);
 const entriesFor = (exId) => S.entries.filter((e) => e.exId === exId).sort((a, b) => b.date - a.date);
-const vol = (e) => (e.w ?? 0) * (e.sets ?? 1) * (e.reps ?? 0);
+// Neue Einträge haben jeden Satz einzeln (list). Ältere kennen nur den ersten Satz.
+const setsOf = (e) => e.list || [{ w: e.w ?? null, r: e.reps ?? null }];
+const setText = (x) => `${x.w != null ? fmt(x.w) + ' kg × ' : ''}${x.r ?? '–'}${x.w != null ? '' : ' Wdh'}`;
+const setsText = (e) => setsOf(e).map(setText).join(' · ');
+const maxW = (e) => Math.max(0, ...setsOf(e).map((x) => x.w ?? 0));
+const maxE = (e) => Math.max(0, ...setsOf(e).map((x) => e1rm(x.w, x.r)));
 const inPlan = (id) => S.state.days.some((d) => d.exIds.includes(id));
 const lastActivity = (day) => Math.max(0, ...S.entries.filter((e) => day.exIds.includes(e.exId)).map((e) => e.date));
 
@@ -143,8 +148,45 @@ function trainState(day) {
 const isTrain = () => S.train && S.tab === 'training' && !!S.day;
 
 // Angefangene Eingaben überleben Umsortieren, Fotos und das Schließen der App
-const draftFor = (id) => { const d = S.drafts[id]; return d && d.day === startOfDay(Date.now()) ? d : {}; };
+const draftFresh = (d) => !!d && Array.isArray(d.s) && Date.now() - d.at < SESSION_MAX;
+const draftFor = (id) => (draftFresh(S.drafts[id]) ? S.drafts[id] : null);
 const saveDrafts = () => lsSet(LS.drafts, S.drafts);
+function editDraft(id) {
+  const d = draftFor(id) || (S.drafts[id] = { s: [] });
+  d.at = Date.now();
+  return d;
+}
+// Sätze einer Übung für die Eingabe: Getipptes, Bestätigtes und die Werte vom letzten Mal
+function setRows(exId) {
+  const d = draftFor(exId);
+  const h = entriesFor(exId);
+  const usual = h.length ? Math.max(...h.slice(0, 3).map((e) => e.list?.length ?? e.sets ?? 1)) : 2;
+  const n = Math.max(1, Math.min(8, d?.n ?? usual));
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const x = d?.s[i] || {};
+    const prev = h.map((e) => setsOf(e)[i]).find((p) => p && p.r != null) || null;
+    const pw = prev ? prev.w : rows[i - 1]?.ew ?? null;
+    const w = x.w || '', r = x.r || '';
+    rows.push({ w, r, ok: !!x.ok, prev, pw, pr: prev?.r ?? null, ew: w !== '' ? num(w) : pw, er: r !== '' ? num(r) : prev?.r ?? null });
+  }
+  return rows;
+}
+function makeEntry(exId, list, date) {
+  return { id: uid(), exId, date, list, w: list[0].w, sets: list.length, reps: list[0].r };
+}
+// Bestätigte Sätze nie verlieren: aus liegen gebliebenen Entwürfen Einträge machen
+function flushDrafts(want) {
+  let saved = 0;
+  for (const [id, d] of Object.entries(S.drafts)) {
+    if (!want(id, d)) continue;
+    const list = (Array.isArray(d.s) ? d.s : []).filter((x) => x?.ok).map((x) => ({ w: num(x.w), r: num(x.r) }));
+    if (list.length && exById(id)) { S.entries.push(makeEntry(id, list, d.at)); saved++; }
+    delete S.drafts[id];
+  }
+  saveDrafts();
+  if (saved) saveEntries();
+}
 
 /* ================= Rendering ================= */
 function setHeader(eyebrow, title, back = false) {
@@ -235,7 +277,7 @@ function viewTrain(day) {
   const { ids, done, queue, entryOf } = trainState(day);
   const doneRow = (id) => {
     const e = entryOf(id);
-    return `<button class="tr-row done" data-act="entry" data-entry="${e.id}"><span class="tr-ic">${ICON.check}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${e.w != null ? fmt(e.w) + ' kg · ' : ''}${e.sets ?? '–'} × ${e.reps ?? '–'}</span></button>`;
+    return `<button class="tr-row done" data-act="entry" data-entry="${e.id}"><span class="tr-ic">${ICON.check}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${esc(setsText(e))}</span></button>`;
   };
   let html = `<div class="tr-bar" role="img" aria-label="${done.length} von ${ids.length} Übungen erledigt">${ids.map((id) => `<i class="${done.includes(id) ? 'on' : id === queue[0] ? 'now' : ''}"></i>`).join('')}</div>`;
   if (!queue.length) {
@@ -246,37 +288,36 @@ function viewTrain(day) {
     html += `<div class="tr-now"><span class="section-title">Jetzt · Übung ${done.length + 1} von ${ids.length}</span>${queue.length > 1 ? '<button class="tr-later" data-act="train-later">Später machen</button>' : ''}</div>${exCard(exById(queue[0]))}`;
     if (queue.length > 1) html += `<div class="tr-sec"><h2 class="section-title">Danach</h2><div class="tr-list">${queue.slice(1).map((id, i) => {
       const last = entriesFor(id)[0];
-      return `<button class="tr-row" data-act="train-pick" data-id="${id}"><span class="tr-ic">${picHTML(exById(id)) || `<b>${done.length + i + 2}</b>`}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${last ? (last.w != null ? fmt(last.w) + ' kg' : (last.reps ?? '–') + ' Wdh') : ''}</span></button>`;
+      return `<button class="tr-row" data-act="train-pick" data-id="${id}"><span class="tr-ic">${picHTML(exById(id)) || `<b>${done.length + i + 2}</b>`}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${((k) => (k ? `${k} ${k === 1 ? 'Satz' : 'Sätze'} notiert` : last ? esc(setText(setsOf(last)[0])) : ''))(setRows(id).filter((x) => x.ok).length)}</span></button>`;
     }).join('')}</div></div>`;
   }
   if (done.length) html += `<div class="tr-sec"><h2 class="section-title">Erledigt</h2><div class="tr-list">${done.map(doneRow).join('')}</div></div>`;
   return html;
 }
-function okLabel(last, typed, isLast) {
-  if (!typed && last && last.reps != null) return `Wie letztes Mal: ${last.w != null ? fmt(last.w) + ' kg · ' : ''}${last.sets ?? '–'} × ${last.reps}`;
-  return isLast ? 'Bestätigen und fertig' : 'Bestätigen und weiter';
+function okLabel(exId) {
+  const rows = setRows(exId); const i = rows.findIndex((x) => !x.ok);
+  if (i < 0) return 'Speichern';
+  const x = rows[i];
+  if (x.w === '' && x.r === '' && x.er != null) return `Satz ${i + 1} wie letztes Mal: ${setText({ w: x.ew, r: x.er })}`;
+  return `Satz ${i + 1} bestätigen${rows.filter((y) => !y.ok).length === 1 ? ' und weiter' : ''}`;
 }
-function updateOk(card) {
-  const b = card?.querySelector('.train-ok'); if (!b) return;
-  const typed = [...card.querySelectorAll('.lt-in')].some((i) => i.value.trim() !== '');
-  b.textContent = okLabel(entriesFor(card.dataset.ex)[0], typed, b.dataset.last === '1');
+function refreshCard(card) {
+  const rows = setRows(card.dataset.ex);
+  rows.forEach((x, i) => { const el = card.querySelector(`.lt-in[data-f="w"][data-i="${i}"]`); if (el) el.placeholder = x.pw != null ? fmt(x.pw) : 'kg'; });
+  const b = card.querySelector('.train-ok'); if (b) b.textContent = okLabel(card.dataset.ex);
 }
 
 function exCard(ex) {
   const train = isTrain();
-  const dr = draftFor(ex.id);
-  const isLast = train && trainState(dayById(S.day)).queue.length === 1;
+  const rows = setRows(ex.id);
+  const cur = rows.findIndex((x) => !x.ok);
   const all = entriesFor(ex.id);
   const recent = all.slice(0, 3), archive = all.slice(3);
-  const last = all[0];
   const pic = picHTML(ex);
   const isOpen = S.open.has(ex.id);
   const row = (e) => `<button class="log-row" data-act="entry" data-entry="${e.id}">
       <span class="lr-date">${relDay(e.date) === 'heute' ? 'Heute' : relDay(e.date) === 'gestern' ? 'Gestern' : dShort(e.date)}</span>
-      <span class="lr-v">${e.w != null ? fmt(e.w) : '–'}</span>
-      <span class="lr-v">${e.sets ?? '–'}</span>
-      <span class="lr-v">${e.reps ?? '–'}</span>
-      <span></span>
+      <span class="lr-sets">${setsOf(e).map((x) => `<span>${esc(setText(x))}</span>`).join('')}</span>
     </button>`;
   return `<section class="ex-card${train ? ' train' : ''}" data-ex="${ex.id}">
     <div class="ex-head">
@@ -291,15 +332,15 @@ function exCard(ex) {
       ${train ? '' : `<button class="drag-handle" aria-label="${esc(ex.name)} verschieben">${ICON.grip}</button>`}
     </div>
     <div class="log-table">
-      <div class="lt-head"><span></span><span>kg</span><span>Sätze</span><span>Wdh</span><span></span></div>
-      <div class="lt-new">
-        <span class="lr-date new">Neu</span>
-        <input class="lt-in" id="w-${ex.id}" data-f="w" value="${esc(dr.w || '')}" inputmode="decimal" autocomplete="off" placeholder="${last?.w != null ? esc(fmt(last.w)) : 'kg'}" aria-label="Gewicht in kg">
-        <input class="lt-in" id="s-${ex.id}" data-f="sets" value="${esc(dr.sets || '')}" inputmode="numeric" autocomplete="off" placeholder="${last?.sets != null ? esc(last.sets) : '–'}" aria-label="Sätze">
-        <input class="lt-in" id="r-${ex.id}" data-f="reps" value="${esc(dr.reps || '')}" inputmode="numeric" autocomplete="off" placeholder="${last?.reps != null ? esc(last.reps) : '–'}" aria-label="Wiederholungen">
-        ${train ? '' : `<button class="lt-save" data-act="save" aria-label="Eintrag speichern">${ICON.check}</button>`}
-      </div>
-      ${train ? `<button class="btn btn-primary btn-block train-ok" data-act="save" data-last="${isLast ? 1 : 0}">${esc(okLabel(last, !!(dr.w || dr.sets || dr.reps), isLast))}</button>` : ''}
+      <div class="set-h"><span></span><span>kg</span><span>Wdh</span><span></span></div>
+      ${rows.map((x, i) => `<div class="set-r${x.ok ? ' done' : i === cur ? ' now' : ''}">
+        <span class="set-n">Satz ${i + 1}</span>
+        <input class="lt-in" id="w-${ex.id}-${i}" data-f="w" data-i="${i}" value="${esc(x.w)}" inputmode="decimal" autocomplete="off" placeholder="${x.pw != null ? esc(fmt(x.pw)) : x.ok ? '–' : 'kg'}" aria-label="Satz ${i + 1}, Gewicht in kg"${x.ok ? ' readonly' : ''}>
+        <input class="lt-in" id="r-${ex.id}-${i}" data-f="r" data-i="${i}" value="${esc(x.r)}" inputmode="numeric" autocomplete="off" placeholder="${x.pr != null ? esc(x.pr) : '–'}" aria-label="Satz ${i + 1}, Wiederholungen"${x.ok ? ' readonly' : ''}>
+        <button class="set-tick" data-act="set-tick" data-i="${i}" aria-pressed="${x.ok}" aria-label="Satz ${i + 1} ${x.ok ? 'wieder öffnen' : 'bestätigen'}">${ICON.check}</button>
+      </div>`).join('')}
+      <div class="set-tools"><button data-act="set-add">+ Satz</button>${rows.length > 1 && !rows[rows.length - 1].ok ? `<button data-act="set-drop">Satz ${rows.length} weglassen</button>` : ''}</div>
+      ${train ? `<button class="btn btn-primary btn-block train-ok" data-act="save">${esc(okLabel(ex.id))}</button>` : ''}
       ${recent.map(row).join('')}
       ${!all.length ? `<p class="lt-empty">Noch kein Eintrag. Trag oben ein, was du heute geschafft hast.</p>` : ''}
     </div>
@@ -313,9 +354,25 @@ function exCard(ex) {
 
 /* ---------- Fortschritt ---------- */
 const PERIODS = { w: { days: 7, label: '1 Woche', short: '1 W' }, m: { days: 30, label: '1 Monat', short: '1 M' }, h: { days: 182, label: '6 Monate', short: '6 M' }, y: { days: 365, label: '1 Jahr', short: '1 J' } };
-const valOf = (x) => x.w || x.reps || 0;
-const unitOf = (h) => (h.length && h.every((x) => !x.w) ? 'Wdh' : 'kg');
-
+const ratio = (a, b) => (a > 0 && b != null ? ((b - a) / a) * 100 : null);
+const avgOf = (list) => { const l = list.filter((x) => x != null); return l.length ? l.reduce((a, b) => a + b, 0) / l.length : null; };
+// Kennzahl eines Satzes. „Gesamt“ verbindet Gewicht und Wiederholungen (Epley), ohne Gewicht zählen die Wiederholungen.
+const setVal = (x, m) => (!x ? null : m === 'weight' ? x.w || null : m === 'reps' ? x.r : x.w ? e1rm(x.w, x.r) : x.r);
+// Vergleicht Satz 1 mit Satz 1, Satz 2 mit Satz 2 usw. und mittelt. So verfälscht ein neu dokumentierter Satz nichts.
+function compare(pts, start = 0) {
+  const n = Math.max(0, ...pts.map((e) => setsOf(e).length));
+  const out = { all: [], weight: [], reps: [] };
+  for (let i = 0; i < n; i++) {
+    const have = pts.filter((e) => setsOf(e)[i]?.r != null || setsOf(e)[i]?.w != null);
+    const A = have[0], B = have[have.length - 1];
+    if (have.length < 2 || B.date < start) continue;
+    const a = setsOf(A)[i], b = setsOf(B)[i];
+    const w = a.w > 0 && b.w > 0 ? ratio(a.w, b.w) : null, r = ratio(a.r, b.r);
+    out.weight.push(w); out.reps.push(r);
+    out.all.push(a.w > 0 && b.w > 0 ? (a.r != null && b.r != null ? ratio(e1rm(a.w, a.r), e1rm(b.w, b.r)) : w) : r);
+  }
+  return { all: avgOf(out.all), weight: avgOf(out.weight), reps: avgOf(out.reps) };
+}
 // Verlauf im gewählten Zeitraum: letzter Eintrag davor als Ausgangswert, dann alle Einträge im Zeitraum
 function series(exId, key = S.period) {
   const asc = entriesFor(exId).reverse();
@@ -323,19 +380,19 @@ function series(exId, key = S.period) {
   const inside = asc.filter((x) => x.date >= start);
   const before = asc.filter((x) => x.date < start).pop();
   const pts = before ? [before, ...inside] : inside;
-  const first = pts[0], last = pts[pts.length - 1];
-  const change = pts.length >= 2 && valOf(first) > 0 && inside.length ? ((valOf(last) - valOf(first)) / valOf(first)) * 100 : null;
-  return { pts, inside, first, last, change, unit: unitOf(asc) };
+  return { pts, first: pts[0], last: pts[pts.length - 1], ...compare(pts, start) };
 }
+const points = (c) => `<div class="pts"><span><i class="${trend(c.weight)}"></i>Gewicht <b class="${trend(c.weight)}">${c.weight == null ? '–' : pct(c.weight)}</b></span><span><i class="${trend(c.reps)}"></i>Wiederholungen <b class="${trend(c.reps)}">${c.reps == null ? '–' : pct(c.reps)}</b></span></div>`;
 const pct = (c) => `${c > 0 ? '+' : c < 0 ? '−' : '±'}${Math.abs(c).toLocaleString('de-AT', { maximumFractionDigits: 1, minimumFractionDigits: Math.abs(c) < 10 ? 1 : 0 })} %`;
 const trend = (c) => (c == null ? 'flat' : c > 0.05 ? 'up' : c < -0.05 ? 'down' : 'flat');
 
 let exQuery = '';
 function viewProgress() {
   const p = PERIODS[S.period];
-  const all = S.state.exercises.map((e) => series(e.id)).filter((s) => s.change != null);
-  const avg = all.length ? all.reduce((a, s) => a + s.change, 0) / all.length : null;
-  const ups = all.filter((s) => s.change > 0.05).length;
+  const all = S.state.exercises.map((e) => series(e.id)).filter((s) => s.all != null);
+  const avg = avgOf(all.map((s) => s.all));
+  const ups = all.filter((s) => s.all > 0.05).length;
+  const sum = { weight: avgOf(all.map((s) => s.weight)), reps: avgOf(all.map((s) => s.reps)) };
   return `
     <div class="period" role="group" aria-label="Zeitraum">
       ${Object.entries(PERIODS).map(([k, v]) => `<button data-act="period" data-p="${k}" aria-pressed="${k === S.period}">${v.short}</button>`).join('')}
@@ -344,7 +401,7 @@ function viewProgress() {
       <div class="eyebrow">Steigerung in ${esc(p.label)}</div>
       ${avg == null
         ? `<div class="sum-val flat">–</div><p class="sum-sub">Noch zu wenig Einträge in diesem Zeitraum. Sobald eine Übung mindestens zwei Einträge hat, siehst du hier, wie stark du zulegst.</p>`
-        : `<div class="sum-val ${trend(avg)}">${pct(avg)}</div><p class="sum-sub">Durchschnitt über ${plural(all.length, 'Übung', 'Übungen')} · ${ups} davon stärker geworden</p>`}
+        : `<div class="sum-val ${trend(avg)}">${pct(avg)}</div><p class="sum-sub">Durchschnitt über ${plural(all.length, 'Übung', 'Übungen')} · ${ups} davon gesteigert</p>${points(sum)}`}
     </div>
     <input type="search" class="search" id="exSearch" placeholder="Übung suchen" value="${esc(exQuery)}" autocomplete="off">
     <div id="exList"></div>`;
@@ -356,20 +413,22 @@ function renderExList() {
   if (!list.length) { box.innerHTML = `<div class="section"><div class="empty"><strong>Nichts gefunden</strong>Übungen legst du direkt in einem Trainingstag an.</div></div>`; return; }
   const rows = list.map((e) => ({ e, s: series(e.id), n: entriesFor(e.id).length }));
   // Übungen mit Daten zuerst, stärkste Steigerung oben
-  rows.sort((a, b) => (b.s.change ?? -1e9) - (a.s.change ?? -1e9) || b.n - a.n || a.e.name.localeCompare(b.e.name, 'de'));
+  rows.sort((a, b) => (b.s.all ?? -1e9) - (a.s.all ?? -1e9) || b.n - a.n || a.e.name.localeCompare(b.e.name, 'de'));
   box.innerHTML = `<div class="prog-list">${rows.map(({ e, s, n }) => {
     const pic = picHTML(e);
-    const t = trend(s.change);
+    const t = trend(s.all);
     const sub = !n ? 'Noch kein Eintrag'
-      : s.change == null ? `Im Zeitraum zu wenig Einträge · zuletzt ${fmt(valOf(entriesFor(e.id)[0]))} ${s.unit}`
-      : `${fmt(valOf(s.first))} → ${fmt(valOf(s.last))} ${s.unit}`;
+      : s.all == null ? `Im Zeitraum zu wenig Einträge · zuletzt ${setsText(entriesFor(e.id)[0])}`
+      : `${setsText(s.first)} → ${setsText(s.last)}`;
+    const vals = s.pts.map((x) => setVal(setsOf(x)[0], 'all')).filter((v) => v != null);
     return `<button class="prog-card" data-act="ex-open" data-ex="${e.id}">
       <div class="pc-top">
         <span class="thumb">${pic}</span>
-        <div style="min-width:0"><div class="row-title">${esc(e.name)}${inPlan(e.id) ? '' : ' <span class="tag-arch">Archiv</span>'}</div><div class="row-sub">${sub}</div></div>
-        ${s.change != null ? `<span class="chg ${t}">${pct(s.change)}</span>` : ''}
+        <div style="min-width:0"><div class="row-title">${esc(e.name)}${inPlan(e.id) ? '' : ' <span class="tag-arch">Archiv</span>'}</div><div class="row-sub">${esc(sub)}</div></div>
+        ${s.all != null ? `<span class="chg ${t}">${pct(s.all)}</span>` : ''}
       </div>
-      ${s.pts.length >= 2 ? miniChart(s.pts.map(valOf), t) : ''}
+      ${s.all != null ? points(s) : ''}
+      ${vals.length >= 2 ? miniChart(vals, t) : ''}
     </button>`;
   }).join('')}</div>`;
 }
@@ -391,36 +450,36 @@ function miniChart(vals, t) {
   </svg>`;
 }
 
-function chart(points, unit, color = 'var(--brass)') {
-  if (!points.length) return `<div class="chart-empty">Sobald du Einträge hast, siehst du hier deine Entwicklung.</div>`;
+// lines: je Satz eine Linie, Werte passend zu dates (null = in diesem Eintrag nicht notiert)
+function chart(dates, lines, unit, color = 'var(--brass)') {
+  const ys = lines.flat().filter((v) => v != null);
+  if (!ys.length) return `<div class="chart-empty">Hier gibt es noch keine Werte.</div>`;
   const W = 340, H = 180, L = 40, R = 16, T = 18, B = 26;
-  const ys = points.map((p) => p.y);
   const dMin = Math.min(...ys), dMax = Math.max(...ys);
   let min = dMin, max = dMax;
   if (min === max) { min -= Math.max(1, min * 0.1); max += Math.max(1, max * 0.1); }
   const pad = (max - min) * 0.12; min -= pad; max += pad;
-  const X = (i) => (points.length === 1 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (points.length - 1));
+  const n = dates.length;
+  const X = (i) => (n === 1 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (n - 1));
   const Y = (v) => T + (1 - (v - min) / (max - min)) * (H - T - B);
-  const id = 'g' + ++gradN;
-  const line = points.map((p, i) => `${X(i).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ');
-  const area = `M${X(0)},${H - B} L${line.split(' ').join(' L')} L${X(points.length - 1)},${H - B} Z`;
   const lbl = (v) => (unit === 'kg' ? fmt(v, 1) : fmtInt(v));
-  const last = points[points.length - 1];
-  const lx = X(points.length - 1), ly = Y(last.y);
-  const t = (x, y, s, a = 'start') => `<text x="${x}" y="${y}" text-anchor="${a}" font-size="11" fill="var(--muted)" font-family="Inter, system-ui">${s}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf über ${points.length} Einträge, zuletzt ${lbl(last.y)} ${unit}">
-    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".28"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+  const t = (x, y, txt, a = 'start') => `<text x="${x}" y="${y}" text-anchor="${a}" font-size="11" fill="var(--muted)" font-family="Inter, system-ui">${txt}</text>`;
+  const draw = (line, k) => {
+    const p = line.map((v, i) => (v == null ? null : [X(i), Y(v)])).filter(Boolean);
+    if (!p.length) return '';
+    const c = k === 0 ? color : 'var(--muted)';
+    const end = p[p.length - 1];
+    return (p.length > 1 ? `<polyline points="${p.map((q) => q.map((v) => v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="${c}" stroke-width="${k ? 1.8 : 2.2}" stroke-linejoin="round" stroke-linecap="round"${k ? ' stroke-dasharray="5 4"' : ''}/>` : '')
+      + p.map((q) => `<circle cx="${q[0]}" cy="${q[1]}" r="2.6" fill="var(--bg)" stroke="${c}" stroke-width="1.6"/>`).join('')
+      + (k ? '' : `<circle cx="${end[0]}" cy="${end[1]}" r="9" fill="${c}" opacity=".18"/><circle cx="${end[0]}" cy="${end[1]}" r="4.2" fill="${c}"/>`);
+  };
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf über ${n} Einträge">
     <line x1="${L}" x2="${W - R}" y1="${Y(dMax)}" y2="${Y(dMax)}" stroke="var(--line)" stroke-dasharray="3 4"/>
-    ${dMin !== dMax ? `<line x1="${L}" x2="${W - R}" y1="${Y(dMin)}" y2="${Y(dMin)}" stroke="var(--line)" stroke-dasharray="3 4"/>` : ''}
     ${t(L - 6, Y(dMax) + 4, lbl(dMax), 'end')}
-    ${dMin !== dMax ? t(L - 6, Y(dMin) + 4, lbl(dMin), 'end') : ''}
-    ${points.length > 1 ? `<path d="${area}" fill="url(#${id})"/><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-    ${points.map((p, i) => `<circle cx="${X(i)}" cy="${Y(p.y)}" r="2.6" fill="var(--bg)" stroke="${color}" stroke-width="1.6"/>`).join('')}
-    <circle cx="${lx}" cy="${ly}" r="9" fill="${color}" opacity=".18"/>
-    <circle cx="${lx}" cy="${ly}" r="4.2" fill="${color}"/>
-    ${t(L, H - 6, dFull(points[0].date))}
-    ${points.length > 1 ? t(W - R, H - 6, dFull(last.date), 'end') : ''}
-  </svg>`;
+    ${dMin !== dMax ? `<line x1="${L}" x2="${W - R}" y1="${Y(dMin)}" y2="${Y(dMin)}" stroke="var(--line)" stroke-dasharray="3 4"/>${t(L - 6, Y(dMin) + 4, lbl(dMin), 'end')}` : ''}
+    ${lines.map(draw).reverse().join('')}
+    ${n > 1 ? t(L, H - 6, dFull(dates[0])) + t(W - R, H - 6, dFull(dates[n - 1]), 'end') : t(X(0), H - 6, dFull(dates[0]), 'middle')}
+  </svg>${lines.length > 1 ? `<div class="legend"><span><i style="background:${color}"></i>Satz 1</span><span><i class="dash"></i>${lines.length > 2 ? 'weitere Sätze' : 'Satz 2'}</span></div>` : ''}`;
 }
 
 /* ================= Sheets ================= */
@@ -470,7 +529,7 @@ function renderPickList() {
   const exact = S.state.exercises.some((e) => e.name.toLowerCase() === ql);
   const item = (e, archivedItem) => {
     const h = entriesFor(e.id); const last = h[0];
-    const info = last ? `${plural(h.length, 'Eintrag', 'Einträge')} · zuletzt ${last.w != null ? fmt(last.w) + ' kg' : (last.reps ?? '–') + ' Wdh'}` : (e.group || '');
+    const info = last ? `${plural(h.length, 'Eintrag', 'Einträge')} · zuletzt ${setsText(last)}` : (e.group || '');
     const where = archivedItem ? '' : S.state.days.filter((d) => d.exIds.includes(e.id)).map((d) => d.name).join(', ');
     return `<button data-act="pick" data-ex="${e.id}"><span class="pk-main"><span>${esc(e.name)}</span><span class="g">${esc(info)}${where ? ' · in ' + esc(where) : ''}</span></span>${photos.get(e.id) ? `<span class="thumb sm"><img src="${photos.get(e.id)}" alt=""></span>` : ''}</button>`;
   };
@@ -486,27 +545,24 @@ function openProgress(id) {
   const h = entriesFor(id);
   const asc = [...h].reverse();
   const m = S.metric;
-  const usesReps = h.length && h.every((x) => !x.w);
-  const metricVal = (x) => (m === 'e1rm' ? e1rm(x.w, x.reps) : m === 'volume' ? vol(x) : x.w || x.reps || 0);
   const s = series(id);
-  const pts = s.pts.map((x) => ({ date: x.date, y: metricVal(x) }));
-  const c = pts.length >= 2 && pts[0].y > 0 && s.inside.length ? ((pts[pts.length - 1].y - pts[0].y) / pts[0].y) * 100 : null;
-  const t = trend(c);
+  const c = s[m], t = trend(c);
   const color = t === 'up' ? 'var(--ok)' : t === 'down' ? 'var(--danger)' : 'var(--brass)';
-  const unit = m === 'weight' && usesReps ? 'Wdh' : 'kg';
+  const noWeight = h.every((x) => !maxW(x));
+  const unit = m === 'reps' || (m === 'all' && noWeight) ? 'Wdh' : 'kg';
+  const nSets = Math.max(0, ...s.pts.map((x) => setsOf(x).length));
+  const lines = Array.from({ length: nSets }, (_, i) => s.pts.map((x) => setVal(setsOf(x)[i], m))).filter((l) => l.some((v) => v != null));
   const P = PERIODS[S.period];
-  const best = Math.max(0, ...h.map((x) => x.w ?? 0));
-  const bestE = Math.max(0, ...h.map((x) => e1rm(x.w, x.reps)));
+  const best = Math.max(0, ...h.map(maxW));
+  const bestE = Math.max(0, ...h.map(maxE));
   let runMax = 0;
   const pr = new Set();
-  for (const x of asc) { if (runMax > 0 && (x.w ?? 0) > runMax) pr.add(x.id); runMax = Math.max(runMax, x.w ?? 0); }
+  for (const x of asc) { if (runMax > 0 && maxW(x) > runMax) pr.add(x.id); runMax = Math.max(runMax, maxW(x)); }
   const pic = picHTML(e);
   openSheet(`${sheetHead(e.name, e.group || 'Übung')}
     ${pic ? `<button class="photo-big" data-act="photo" data-ex="${id}">${pic}</button>` : ''}
     <div class="metric-toggle" role="group" aria-label="Kennzahl">
-      <button data-act="metric" data-m="weight" data-ex="${id}" aria-pressed="${m === 'weight'}">${usesReps ? 'Wiederholungen' : 'Gewicht'}</button>
-      <button data-act="metric" data-m="e1rm" data-ex="${id}" aria-pressed="${m === 'e1rm'}">1RM geschätzt</button>
-      <button data-act="metric" data-m="volume" data-ex="${id}" aria-pressed="${m === 'volume'}">Volumen</button>
+      ${[['all', 'Gesamt'], ['weight', 'Gewicht'], ['reps', 'Wiederholungen']].map(([k, l]) => `<button data-act="metric" data-m="${k}" data-ex="${id}" aria-pressed="${m === k}">${l}</button>`).join('')}
     </div>
     <div class="period" role="group" aria-label="Zeitraum">
       ${Object.entries(PERIODS).map(([k, v]) => `<button data-act="period" data-p="${k}" data-ex="${id}" aria-pressed="${k === S.period}">${v.short}</button>`).join('')}
@@ -514,18 +570,19 @@ function openProgress(id) {
     <div class="detail-chg">
       ${c == null
         ? `<span class="sum-val flat">–</span><span class="sum-sub">In ${esc(P.label)} zu wenig Einträge für einen Vergleich.</span>`
-        : `<span class="sum-val ${t}">${pct(c)}</span><span class="sum-sub">in ${esc(P.label)} · ${fmt(pts[0].y, 1)} → ${fmt(pts[pts.length - 1].y, 1)} ${unit}</span>`}
+        : `<span class="sum-val ${t}">${pct(c)}</span><span class="sum-sub">${m === 'weight' ? 'Gewicht' : m === 'reps' ? 'Wiederholungen' : 'gesamt'} in ${esc(P.label)}</span>`}
     </div>
-    <div class="chart-box">${chart(pts, unit, color)}</div>
+    ${points(s)}
+    <div class="chart-box">${s.pts.length ? chart(s.pts.map((x) => x.date), lines, unit, color) : chart([], [], unit)}</div>
     <div class="kpis">
       <div class="kpi"><div class="kpi-val">${best ? fmt(best) : '–'}<small>${best ? 'kg' : ''}</small></div><div class="kpi-lbl">Bestwert</div></div>
       <div class="kpi"><div class="kpi-val">${bestE ? fmt(bestE, 1) : '–'}<small>${bestE ? 'kg' : ''}</small></div><div class="kpi-lbl">1RM geschätzt</div></div>
       <div class="kpi"><div class="kpi-val">${h.length}</div><div class="kpi-lbl">Einträge</div></div>
     </div>
-    ${h.length ? `<div><h3 class="section-title" style="margin-bottom:8px">Alle Einträge</h3><div class="hist">${h.map((x) => `<div class="hist-row"><div class="hist-date">${dFull(x.date)}</div><div class="hist-sets">${x.w != null ? fmt(x.w) + ' kg' : '–'} · ${x.sets ?? '–'} × ${x.reps ?? '–'}${pr.has(x.id) ? ' <span class="pr">Neuer Bestwert</span>' : ''}</div></div>`).join('')}</div></div>` : ''}
+    ${h.length ? `<div><h3 class="section-title" style="margin-bottom:8px">Alle Einträge</h3><div class="hist">${h.map((x) => `<div class="hist-row"><div class="hist-date">${dFull(x.date)}</div><div class="hist-sets">${esc(setsText(x))}${pr.has(x.id) ? ' <span class="pr">Neuer Bestwert</span>' : ''}</div></div>`).join('')}</div></div>` : ''}
     <div class="sheet-actions"><button class="btn btn-block btn-secondary" data-act="ex-edit" data-ex="${id}">Übung bearbeiten</button>${inPlan(id) ? '' : `<button class="btn btn-block btn-danger" data-act="ex-delete" data-ex="${id}">Endgültig löschen</button>`}</div>
     ${inPlan(id) ? '' : '<p class="small muted">Diese Übung ist archiviert. Über „Übung hinzufügen“ in einem Trainingstag holst du sie mit allen Einträgen zurück.</p>'}
-    <p class="small muted">1RM geschätzt nach Epley: Gewicht × (1 + Wiederholungen / 30). Volumen: Gewicht × Sätze × Wiederholungen.</p>`);
+    <p class="small muted">„Gesamt“ rechnet Gewicht und Wiederholungen zusammen (geschätztes 1RM nach Epley: Gewicht × (1 + Wiederholungen / 30)). Verglichen wird immer Satz 1 mit Satz 1 und Satz 2 mit Satz 2. Beim Gesamtwert sind die Zahlen in der Kurve dieses geschätzte 1RM.</p>`);
 }
 
 let editGroup = '';
@@ -617,37 +674,73 @@ const exOf = (el) => el.closest('[data-ex]')?.dataset.ex;
 const curDay = () => dayById(S.day);
 function touchPlan() { if (S.state.example) S.state.example = false; saveState(); }
 
-function saveEntry(card) {
+function tickSet(card, i) {
   const exId = card.dataset.ex;
-  const get = (f) => card.querySelector(`[data-f="${f}"]`);
-  const val = (f, isInt) => {
-    const el = get(f);
-    const v = el.value.trim() !== '' ? el.value : el.placeholder;
-    const n = num(v);
-    return n == null ? null : isInt ? Math.round(n) : n;
-  };
-  const typed = ['w', 'sets', 'reps'].some((f) => get(f).value.trim() !== '');
+  const rows = setRows(exId), x = rows[i]; if (!x) return;
+  if (x.ok) { // wieder öffnen
+    editDraft(exId).s[i].ok = false; saveDrafts(); card.outerHTML = exCard(exById(exId)); return;
+  }
+  if (x.er == null) { toast(`Trag bei Satz ${i + 1} die Wiederholungen ein`); card.querySelector(`.lt-in[data-f="r"][data-i="${i}"]`)?.focus(); return; }
+  const d = editDraft(exId);
+  d.n = rows.length;
+  d.s[i] = { w: x.ew != null ? String(x.ew).replace('.', ',') : '', r: String(Math.round(x.er)), ok: true };
+  saveDrafts();
+  if (navigator.vibrate) try { navigator.vibrate(12); } catch {}
+  if (rows.every((y, k) => k === i || y.ok)) return finishExercise(card);
+  document.activeElement?.blur?.();
+  card.outerHTML = exCard(exById(exId));
+}
+function finishExercise(card) {
+  const exId = card.dataset.ex;
+  const list = setRows(exId).filter((x) => x.ok).map((x) => ({ w: num(x.w), r: num(x.r) }));
+  if (!list.length) return;
   const train = isTrain();
   const prev = entriesFor(exId)[0];
-  if (!typed && !(train && prev && prev.reps != null)) { toast('Trag zuerst ein, was du heute gemacht hast'); get('w').focus(); return; }
-  const entry = { id: uid(), exId, date: Date.now(), w: val('w'), sets: val('sets', true), reps: val('reps', true) };
-  if (train && entry.reps == null) { toast('Trag noch die Wiederholungen ein'); get('reps').focus(); return; }
-  const prevBest = Math.max(0, ...entriesFor(exId).map((e) => e.w ?? 0));
+  const prevBest = Math.max(0, ...entriesFor(exId).map(maxW));
+  const entry = makeEntry(exId, list, Date.now());
   S.entries.push(entry); saveEntries();
   if (S.state.example) { S.state.example = false; saveState(); }
   delete S.drafts[exId]; saveDrafts();
-  if (navigator.vibrate) try { navigator.vibrate(12); } catch {}
-  const best = prevBest && entry.w > prevBest ? `Neuer Bestwert: ${fmt(entry.w)} kg` : '';
+  const gain = prev ? compare([prev, entry]).all : null;
+  const note = prevBest && maxW(entry) > prevBest ? `Neuer Bestwert: ${fmt(maxW(entry))} kg` : gain > 0.05 ? `Gesteigert: ${pct(gain)} zum letzten Mal` : '';
+  document.activeElement?.blur?.();
   if (train) {
-    document.activeElement?.blur?.();
     S.session.pick = null; S.session.later = S.session.later.filter((x) => x !== exId); touchSession();
     const next = trainState(curDay()).queue[0];
     render(); window.scrollTo(0, 0);
-    toast(best || (next ? `Gespeichert. Weiter: ${exById(next).name}` : 'Gespeichert'));
+    toast(note || (next ? `Gespeichert. Weiter: ${exById(next).name}` : 'Gespeichert'));
   } else {
     card.outerHTML = exCard(exById(exId));
-    toast(best || 'Gespeichert');
+    toast(note || 'Gespeichert');
   }
+}
+
+// Eintrag nachträglich ergänzen oder korrigieren
+const editRow = (i, x) => `<div class="set-r edit"><span class="set-n">Satz ${i + 1}</span><input class="field" data-ew="${i}" inputmode="decimal" autocomplete="off" placeholder="kg" value="${x?.w != null ? esc(fmt(x.w)) : ''}" aria-label="Satz ${i + 1}, Gewicht in kg"><input class="field" data-er="${i}" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="${x?.r ?? ''}" aria-label="Satz ${i + 1}, Wiederholungen"></div>`;
+function openEntry(e) {
+  const list = setsOf(e);
+  const n = Math.max(1, Math.min(8, Math.max(list.length, e.sets || 1)));
+  openSheet(`${sheetHead(exById(e.exId)?.name || 'Eintrag', new Date(e.date).toLocaleDateString('de-AT', { weekday: 'long', day: 'numeric', month: 'long' }))}
+    <div class="form" id="entryForm" data-entry="${e.id}">
+      <div class="set-h edit"><span></span><span>kg</span><span>Wdh</span></div>
+      <div id="entryRows">${Array.from({ length: n }, (_, i) => editRow(i, list[i])).join('')}</div>
+      <button class="add-set" data-act="entry-row">+ Satz</button>
+      <p class="err" id="entryErr" hidden></p>
+      <div class="sheet-actions"><button class="btn btn-block btn-primary" data-act="entry-save">Speichern</button>
+      <button class="btn btn-block btn-danger" data-act="entry-del" data-entry="${e.id}">Eintrag löschen</button></div>
+    </div>`);
+}
+function saveEditedEntry() {
+  const form = $('#entryForm'); const e = S.entries.find((x) => x.id === form.dataset.entry); if (!e) return closeSheet();
+  const rows = [...form.querySelectorAll('[data-ew]')].map((el, i) => ({ w: num(el.value.trim()), r: num(form.querySelector(`[data-er="${i}"]`).value.trim()) }));
+  while (rows.length && rows[rows.length - 1].w == null && rows[rows.length - 1].r == null) rows.pop();
+  const bad = rows.findIndex((x) => x.r == null);
+  const err = $('#entryErr');
+  if (!rows.length || bad >= 0) { err.textContent = `Bei Satz ${bad < 0 ? 1 : bad + 1} fehlen die Wiederholungen.`; err.hidden = false; return; }
+  const list = rows.map((x) => ({ w: x.w, r: Math.round(x.r) }));
+  if (e.list || list.length > 1) { e.list = list; e.sets = list.length; } // sonst alter Eintrag: Anzahl der Sätze bleibt wie notiert
+  e.w = list[0].w; e.reps = list[0].r;
+  saveEntries(); closeSheet(); render(); toast('Eintrag gespeichert');
 }
 
 const actions = {
@@ -677,7 +770,7 @@ const actions = {
   },
   'train-pick': (el) => { S.session.pick = el.dataset.id; touchSession(); render(); window.scrollTo(0, 0); },
   'train-again': () => { S.session = { dayId: S.day, since: Date.now(), touched: Date.now(), later: [], pick: null }; saveSession(); render(); window.scrollTo(0, 0); },
-  'train-end': () => { S.session = null; saveSession(); closeSheet(); go('training'); },
+  'train-end': () => { const ids = curDay().exIds; flushDrafts((id) => ids.includes(id)); S.session = null; saveSession(); closeSheet(); go('training'); },
   'train-plan': () => { closeSheet(); go('training', S.day); },
   'day-add': () => {
     const day = { id: uid(), name: `Tag ${S.state.days.length + 1}`, exIds: [] };
@@ -690,7 +783,7 @@ const actions = {
       <button data-act="train-plan">Alle Übungen anzeigen und bearbeiten</button>
       <button data-act="ex-add">Übung hinzufügen</button>
       <button data-act="train-end">Training beenden</button></div>
-      <p class="small muted">Alles, was du schon bestätigt hast, ist gespeichert. Startest du den Tag heute noch einmal, machst du bei der ersten offenen Übung weiter.</p>`);
+      <p class="small muted">Alle bestätigten Sätze bleiben gespeichert. Startest du den Tag heute noch einmal, machst du bei der ersten offenen Übung weiter.</p>`);
     openSheet(`${sheetHead(day.name, 'Trainingstag')}<div class="menu-list">
       <button data-act="day-rename">Umbenennen</button>
       <button data-act="day-move" data-dir="-1">In der Liste nach oben</button>
@@ -765,14 +858,26 @@ const actions = {
   metric: (el) => { S.metric = el.dataset.m; lsSet(LS.metric, S.metric); openProgress(el.dataset.ex); },
 
   // Einträge
-  save: (el) => saveEntry(el.closest('.ex-card')),
+  save: (el) => { const card = el.closest('.ex-card'); const i = setRows(card.dataset.ex).findIndex((x) => !x.ok); i < 0 ? finishExercise(card) : tickSet(card, i); },
+  'set-tick': (el) => tickSet(el.closest('.ex-card'), +el.dataset.i),
+  'set-add': (el) => {
+    const card = el.closest('.ex-card'), id = card.dataset.ex, n = setRows(id).length;
+    if (n >= 8) return toast('Mehr als 8 Sätze gehen nicht');
+    editDraft(id).n = n + 1; saveDrafts(); card.outerHTML = exCard(exById(id));
+  },
+  'set-drop': (el) => {
+    const card = el.closest('.ex-card'), id = card.dataset.ex, n = setRows(id).length;
+    const d = editDraft(id); d.n = n - 1; d.s.length = Math.min(d.s.length, n - 1); saveDrafts();
+    if (setRows(id).every((x) => x.ok)) return finishExercise(card);
+    card.outerHTML = exCard(exById(id));
+  },
   archive: (el) => { const id = exOf(el); S.open.has(id) ? S.open.delete(id) : S.open.add(id); const c = el.closest('.ex-card'); c.outerHTML = exCard(exById(id)); },
   entry: (el) => {
     const e = S.entries.find((x) => x.id === el.dataset.entry); if (!e) return;
-    openSheet(`${sheetHead(`${e.w != null ? fmt(e.w) + ' kg' : '–'} · ${e.sets ?? '–'} × ${e.reps ?? '–'}`, `${exById(e.exId)?.name || ''} · ${dFull(e.date)}`)}
-      <div class="sheet-actions"><button class="btn btn-block btn-danger" data-act="entry-del" data-entry="${e.id}">Eintrag löschen</button>
-      <button class="btn btn-block btn-secondary" data-act="sheet-close">Abbrechen</button></div>`);
+    openEntry(e);
   },
+  'entry-row': () => { const box = $('#entryRows'); const n = box.children.length; if (n < 8) box.insertAdjacentHTML('beforeend', editRow(n, null)); },
+  'entry-save': () => saveEditedEntry(),
   'entry-del': (el) => { S.entries = S.entries.filter((x) => x.id !== el.dataset.entry); saveEntries(); closeSheet(); render(); toast('Eintrag gelöscht'); },
 
   // Fotos
@@ -809,8 +914,9 @@ document.addEventListener('input', (ev) => {
     const clean = t.value.replace(t.dataset.f === 'w' ? /[^\d.,]/g : /[^\d]/g, '');
     if (clean !== t.value) t.value = clean;
     const card = t.closest('.ex-card'), id = card.dataset.ex;
-    S.drafts[id] = { ...draftFor(id), day: startOfDay(Date.now()), [t.dataset.f]: clean };
-    saveDrafts(); updateOk(card);
+    const d = editDraft(id), i = +t.dataset.i;
+    d.s[i] = { ...(d.s[i] || {}), [t.dataset.f]: clean };
+    saveDrafts(); refreshCard(card);
   }
 });
 
@@ -897,9 +1003,9 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && ev.target.classList.contains('lt-in')) {
     ev.preventDefault();
     const card = ev.target.closest('.ex-card');
-    const ins = [...card.querySelectorAll('.lt-in')];
+    const ins = [...card.querySelectorAll('.lt-in:not([readonly])')];
     const i = ins.indexOf(ev.target);
-    if (i < ins.length - 1) ins[i + 1].focus(); else { ev.target.blur(); saveEntry(card); }
+    if (i < ins.length - 1) ins[i + 1].focus(); else ev.target.blur();
   }
   if (ev.key === 'Enter' && ev.target.id === 'dayNameIn') actions['rename-save']();
   if (ev.key === 'Enter' && ev.target.id === 'pickSearch') $('#pickList button')?.click();
@@ -953,10 +1059,10 @@ async function importData(file) {
 /* ================= Start ================= */
 // Ein altes Training (länger als 6 Stunden her) nicht wieder öffnen
 function leaveStale() { if (S.train && !sessionFresh()) { S.session = null; saveSession(); S.train = false; lsSet(LS.train, false); if (S.tab === 'training') { S.day = null; lsSet(LS.day, null); } return true; } return false; }
-for (const k of Object.keys(S.drafts)) if (S.drafts[k].day !== startOfDay(Date.now())) delete S.drafts[k];
-saveDrafts();
+const flushOld = () => flushDrafts((id, d) => !draftFresh(d));
+flushOld();
 leaveStale();
-document.addEventListener('visibilitychange', () => { if (!document.hidden && leaveStale()) render(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) return; const n = Object.keys(S.drafts).length; flushOld(); if (leaveStale() || Object.keys(S.drafts).length !== n) render(); });
 render();
 loadPhotos().then(() => { if (photos.size) render(); });
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
