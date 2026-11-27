@@ -30,6 +30,7 @@ const ICON = {
   down: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   grip: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
   pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1-4.5L16.2 4.3a1.8 1.8 0 0 1 2.5 0l1 1a1.8 1.8 0 0 1 0 2.5L8.5 19z"/><path d="m14.5 6 3.5 3.5"/></svg>',
   cam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.5-2h6l1.5 2h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.8" r="3.3"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2"/></svg>',
@@ -273,7 +274,7 @@ function viewDays() {
     </div>`;
   }
   if (!S.state.days.length) html += `<div class="empty"><strong>Noch kein Trainingstag</strong>Leg unten deinen ersten Tag an, z. B. „Oberkörper“.</div>`;
-  html += `<button class="btn-dashed" data-act="day-add">+ Trainingstag hinzufügen</button></div>`;
+  html += `<button class="btn-dashed" data-act="day-add">+ Trainingstag hinzufügen</button>${allExButton()}</div>`;
   return html;
 }
 
@@ -434,7 +435,8 @@ function viewProgress() {
         : `<div class="sum-val ${trend(avg)}" data-count="${avg}">${pct(avg)}</div><p class="sum-sub">Durchschnitt über ${plural(all.length, 'Übung', 'Übungen')} · ${ups} davon gesteigert</p>${points(sum)}`}
     </div>
     <input type="search" class="search" id="exSearch" placeholder="Übung suchen" value="${esc(exQuery)}" autocomplete="off">
-    <div id="exList"></div>`;
+    <div id="exList"></div>
+    <div class="section">${allExButton()}</div>`;
 }
 function renderExList() {
   const box = $('#exList'); if (!box) return;
@@ -626,6 +628,61 @@ function openProgress(id) {
 }
 
 let editGroup = '';
+/* ---------- Alle Übungen: Übung selbst bearbeiten, Fortschritt gleich dabei ---------- */
+const allExButton = () => `<button class="all-ex" data-act="all-ex"><span class="all-ex-ic">${ICON.pen}</span><span><b>Alle Übungen</b><small>${plural(S.state.exercises.length, 'Übung', 'Übungen')} · Name, Muskelgruppe, Foto</small></span>${ICON.chev}</button>`;
+let allQuery = '';
+function openAllExercises() {
+  openSheet(`${sheetHead('Alle Übungen', `${plural(S.state.exercises.length, 'Übung', 'Übungen')} gespeichert`)}
+    <input type="search" class="field" id="allSearch" placeholder="Übung suchen" value="${esc(allQuery)}" autocomplete="off">
+    <div id="allList"></div>`);
+  renderAllList();
+}
+function renderAllList() {
+  const box = $('#allList'); if (!box) return;
+  const q = allQuery.trim().toLowerCase();
+  const list = S.state.exercises.filter((e) => !q || e.name.toLowerCase().includes(q) || (e.group || '').toLowerCase().includes(q));
+  if (!list.length) { box.innerHTML = `<div class="chart-empty">Keine Übung gefunden.</div>`; return; }
+  const groups = {};
+  for (const e of list) (groups[e.group || 'Sonstige'] ||= []).push(e);
+  const order = [...GROUPS, ...Object.keys(groups).filter((g) => !GROUPS.includes(g))];
+  box.innerHTML = order.filter((g) => groups[g]).map((g) => `<div class="all-group"><div class="pick-sec">${esc(g)}</div><div class="all-rows">${groups[g].sort((a, b) => a.name.localeCompare(b.name, 'de')).map((e) => {
+    const days = S.state.days.filter((d) => d.exIds.includes(e.id)).map((d) => d.name);
+    const n = entriesFor(e.id).length;
+    return `<button class="all-row" data-act="ex-hub" data-ex="${e.id}"><span class="thumb sm">${picHTML(e)}</span><span class="pk-main"><span>${esc(e.name)}</span><span class="g">${days.length ? esc(days.join(', ')) : 'Archiv'} · ${plural(n, 'Eintrag', 'Einträge')}</span></span>${ICON.chev}</button>`;
+  }).join('')}</div></div>`).join('');
+}
+function openExerciseHub(id) {
+  const e = exById(id); if (!e) return openAllExercises();
+  editGroup = e.group || 'Sonstige';
+  const h = entriesFor(id), s = series(id), t = trend(s.all);
+  const vals = s.pts.map((x) => setVal(setsOf(x)[0], 'all')).filter((v) => v != null);
+  const days = S.state.days.filter((d) => d.exIds.includes(id)).map((d) => d.name);
+  openSheet(`<button class="sheet-back" data-act="all-ex">${ICON.back}Alle Übungen</button>
+    ${sheetHead(e.name, days.length ? 'In ' + days.join(', ') : 'Archiv · in keinem Trainingstag')}
+    <div class="hub-photo">
+      <button class="ex-photo${picHTML(e) ? ' has' : ''}" data-act="photo" data-ex="${id}" aria-label="Foto vom Gerät">${picHTML(e) || ICON.cam}</button>
+      <button class="btn btn-secondary" data-act="photo" data-ex="${id}">${picHTML(e) ? 'Foto ändern' : 'Foto vom Gerät hinzufügen'}</button>
+    </div>
+    <div class="hub-prog">
+      <div class="hub-prog-head"><h3 class="section-title">Mein Fortschritt</h3><span class="muted small">${esc(PERIODS[S.period].label)}</span></div>
+      ${!h.length ? '<p class="muted small">Noch kein Eintrag. Sobald du die Übung trainierst, siehst du hier deine Entwicklung.</p>'
+        : `${s.all != null ? `<div class="detail-chg"><span class="sum-val ${t}" data-count="${s.all}">${pct(s.all)}</span><span class="sum-sub">gesamt</span></div>${points(s)}` : '<p class="muted small">In diesem Zeitraum zu wenig Einträge für einen Vergleich.</p>'}
+        ${vals.length >= 2 ? miniChart(vals, t) : ''}
+        <div class="hist">${h.slice(0, 3).map((x) => `<div class="hist-row"><div class="hist-date">${dFull(x.date)}</div><div class="hist-sets">${esc(setsText(x))}</div></div>`).join('')}</div>`}
+      ${h.length ? `<button class="btn btn-block btn-secondary" data-act="ex-open" data-ex="${id}">Ganzen Fortschritt ansehen</button>` : ''}
+    </div>
+    <div class="form hub-form" data-edit="${id}" data-return="hub">
+      <h3 class="section-title">Übung bearbeiten</h3>
+      <label class="lbl">Name<input class="field" id="exNameIn" value="${esc(e.name)}" autocomplete="off"></label>
+      <div class="lbl">Muskelgruppe<div class="chips" id="groupChips">${GROUPS.map((g) => `<button data-act="group" data-g="${esc(g)}" aria-pressed="${g === editGroup}">${esc(g)}</button>`).join('')}</div></div>
+      <label class="lbl">Notiz (optional)<input class="field" id="exNoteIn" value="${esc(e.note || '')}" placeholder="z. B. Sitz Stufe 4, enger Griff" autocomplete="off"></label>
+      <p class="err" id="exErr" hidden></p>
+      <button class="btn btn-block btn-primary" data-act="ex-save">Änderungen speichern</button>
+    </div>
+    <button class="btn btn-ghost hub-del" data-act="ex-delete" data-ex="${id}">Übung endgültig löschen</button>`);
+  countUp();
+}
+
 function editExercise(id) {
   const e = exById(id);
   editGroup = e.group || 'Sonstige';
@@ -642,6 +699,7 @@ function editExercise(id) {
 function openSettings() {
   const last = lsGet(LS.backup, null);
   openSheet(`${sheetHead('Einstellungen')}
+    ${allExButton()}
     <div><h3 class="section-title" style="margin-bottom:10px">Speicher</h3>
       <div class="note-box"><b style="color:var(--text)">Alles liegt auf diesem iPhone.</b><br>Die App braucht kein Konto und kein Internet. Damit nichts verloren geht, falls du das iPhone wechselst oder die App löschst, sicher deine Daten ab und zu in iCloud Drive. Die Fotos sind in der Sicherung enthalten.</div>
     </div>
@@ -910,13 +968,17 @@ const actions = {
   },
   'ex-delete': async (el) => {
     const id = el.dataset.ex; const ex = exById(id); const n = entriesFor(id).length;
-    const ok = await confirmSheet(`${ex.name} endgültig löschen?`, `Die Übung${n ? ` mit ${plural(n, 'Eintrag', 'Einträgen')}` : ''}${photos.has(id) ? ' und Foto' : ''} wird gelöscht. Das lässt sich nicht rückgängig machen.`, 'Endgültig löschen', true);
+    const days = S.state.days.filter((d) => d.exIds.includes(id)).map((d) => d.name);
+    const ok = await confirmSheet(`${ex.name} endgültig löschen?`, `Die Übung${n ? ` mit ${plural(n, 'Eintrag', 'Einträgen')}` : ''}${photos.has(id) ? ' und Foto' : ''} wird gelöscht${days.length ? ` und aus ${days.join(', ')} entfernt` : ''}. Das lässt sich nicht rückgängig machen. Willst du sie nur nicht mehr trainieren, entferne sie stattdessen aus dem Trainingstag, dann bleibt alles im Archiv.`, 'Endgültig löschen', true);
     if (!ok) return;
+    S.state.days.forEach((d) => { d.exIds = d.exIds.filter((x) => x !== id); });
     S.state.exercises = S.state.exercises.filter((x) => x.id !== id);
     S.entries = S.entries.filter((x) => x.exId !== id); saveEntries(); saveState();
     await removePhoto(id); render(); toast('Übung gelöscht');
   },
-  'ex-edit': (el) => editExercise(exOf(el)),
+  'ex-edit': (el) => openExerciseHub(exOf(el)),
+  'all-ex': () => { allQuery = ''; openAllExercises(); },
+  'ex-hub': (el) => openExerciseHub(el.dataset.ex),
   group: (el) => { editGroup = el.dataset.g; document.querySelectorAll('#groupChips button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.g === editGroup)); },
   'ex-save': (el) => {
     const id = el.closest('[data-edit]').dataset.edit;
@@ -925,7 +987,8 @@ const actions = {
     if (!name) { err.textContent = 'Gib der Übung einen Namen.'; err.hidden = false; return; }
     if (S.state.exercises.some((e) => e.id !== id && e.name.toLowerCase() === name.toLowerCase())) { err.textContent = 'Eine Übung mit diesem Namen gibt es schon.'; err.hidden = false; return; }
     Object.assign(exById(id), { name, group: editGroup, note: $('#exNoteIn').value.trim() });
-    saveState(); closeSheet(); render(); toast('Gespeichert');
+    saveState(); render(); toast('Gespeichert');
+    if (el.closest('[data-return="hub"]')) openExerciseHub(id); else closeSheet();
   },
   'ex-open': (el) => { openProgress(el.dataset.ex); countUp(); },
   period: (el) => { S.period = el.dataset.p; lsSet(LS.period, S.period); render(); if (el.dataset.ex) openProgress(el.dataset.ex); countUp(); },
@@ -984,6 +1047,7 @@ document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.id === 'exSearch') { exQuery = t.value; renderExList(); }
   else if (t.id === 'pickSearch') { pickQuery = t.value; renderPickList(); }
+  else if (t.id === 'allSearch') { allQuery = t.value; renderAllList(); }
   else if (t.id === 'newExName') { const e = $('#newExErr'); if (e) e.hidden = true; }
   else if (t.classList.contains('lt-in')) {
     const clean = t.value.replace(t.dataset.f === 'w' ? /[^\d.,]/g : /[^\d]/g, '');
