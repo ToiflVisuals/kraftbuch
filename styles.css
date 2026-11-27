@@ -1,16 +1,16 @@
 /* Layout: eine Spalte (max. 560px), Tab-Leiste unten, Training als Vollbild-Ebene.
    Karten nur dort, wo ein Objekt in sich geschlossen ist: Trainingstag, Übungsblock, Sheet. */
 :root {
-  --bg: #121110;
-  --surface: #1b1a18;
-  --surface-2: #252421;
-  --line: #312f2b;
-  --text: #efeae1;
-  --muted: #9a958b;
-  --faint: #66625a;
-  --brass: #d6aa5e;
-  --brass-ink: #1c1406;
-  --brass-soft: rgba(214, 170, 94, 0.13);
+  --bg: #0b0c0e;
+  --surface: #15171a;
+  --surface-2: #1e2125;
+  --line: #2a2e34;
+  --text: #eef1f5;
+  --muted: #929aa6;
+  --faint: #5c636e;
+  --brass: #9cc0f4;
+  --brass-ink: #07111f;
+  --brass-soft: rgba(142, 182, 240, 0.13);
   --ok: #8cc49a;
   --ok-ink: #0f1d12;
   --ok-soft: rgba(140, 196, 154, 0.13);
@@ -563,3 +563,197 @@ body.reordering .ex-card { padding-bottom: 12px; transition: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Andere Übung (nur für dieses Training) ---------- */
+.swap-btn { margin-top: 6px; min-height: 32px; padding: 0 12px; border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 500; }
+.swap-info { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--muted); }
+.swap-info b { color: var(--text); font-weight: 500; }
+.swap-info .swap-btn { margin-top: 0; }
+.tr-swap { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+.new-ex { display: grid; gap: 12px; padding: 14px; border-radius: var(--r); background: var(--surface-2); }
+.new-ex .field { background: var(--bg); }
+.new-ex .chips button { background: var(--bg); }
+.new-ex .chips button[aria-pressed="true"] { background: var(--brass); }
+
+/* =====================================================================
+   Feinschliff: Tiefe, Metall, Licht und Bewegung.
+   Alles hier überschreibt die Grundstile oben, die Struktur bleibt gleich.
+   ===================================================================== */
+:root {
+  --bg: #0b0c0e;
+  --surface: #15171a;
+  --surface-2: #1e2125;
+  --line: rgba(255, 255, 255, 0.07);
+  --hi: rgba(255, 255, 255, 0.07);
+  --text: #eef1f5;
+  --muted: #929aa6;
+  --faint: #5c636e;
+  --brass: #9cc0f4;
+  --brass-ink: #07111f;
+  --brass-soft: rgba(142, 182, 240, 0.12);
+  --brass-grad: linear-gradient(180deg, #d3e4fc 0%, #9fc2f3 48%, #6f97d9 100%);
+  --ok: #93cfa2;
+  --ok-soft: rgba(147, 207, 162, 0.12);
+  --card: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012) 40%, rgba(255, 255, 255, 0) 100%), var(--surface);
+  --card-shadow: inset 0 1px 0 var(--hi), 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 40px -22px rgba(0, 0, 0, 0.9);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --r: 20px;
+  --r-sm: 13px;
+}
+
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(120% 55% at 50% -12%, rgba(142, 182, 240, 0.11), rgba(142, 182, 240, 0) 62%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .045 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, repeat;
+  letter-spacing: -0.005em;
+}
+
+/* Kopfzeile */
+.topbar { background: linear-gradient(180deg, rgba(11, 12, 14, 0.94) 55%, rgba(11, 12, 14, 0.6)); border-bottom: 1px solid transparent; }
+.topbar-inner { padding-block: 16px 14px; }
+h1 { font-size: 42px; letter-spacing: 0.012em; text-shadow: 0 2px 18px rgba(0, 0, 0, 0.5); }
+.eyebrow { color: var(--brass); letter-spacing: 0.16em; }
+.icon-btn { background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--hi); color: var(--text); transition: transform 0.15s var(--ease), background 0.2s; }
+.icon-btn:active { transform: scale(0.93); background: rgba(255, 255, 255, 0.09); }
+
+/* Schwebende Tab-Leiste */
+main { padding-bottom: calc(120px + var(--sb)); }
+.tabbar {
+  left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(10px + var(--sb));
+  max-width: 420px; margin: 0 auto;
+  padding: 6px;
+  border: 1px solid var(--line); border-radius: 26px;
+  background: rgba(21, 23, 27, 0.72);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4); backdrop-filter: blur(22px) saturate(1.4);
+  box-shadow: inset 0 1px 0 var(--hi), 0 20px 40px -14px rgba(0, 0, 0, 0.85);
+}
+.tabbar-inner { padding: 0; gap: 6px; }
+.tab { flex-direction: row; justify-content: center; gap: 8px; min-height: 48px; padding: 0 12px; border-radius: 20px; font-size: 13px; font-weight: 600; letter-spacing: 0.01em; transition: background 0.3s var(--ease), color 0.3s var(--ease); }
+.tab svg { width: 22px; height: 22px; }
+.tab[aria-current="page"] { background: var(--brass-soft); color: var(--brass); box-shadow: inset 0 0 0 1px rgba(142, 182, 240, 0.18); }
+.toast { bottom: calc(92px + var(--sb)); }
+
+/* Karten mit Tiefe */
+.day-card, .ex-card, .prog-card, .summary, .tr-list, .plan-day, .empty {
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--card-shadow);
+  border-radius: var(--r);
+}
+.banner { background: linear-gradient(180deg, rgba(142, 182, 240, 0.14), rgba(142, 182, 240, 0.06)); border: 1px solid rgba(142, 182, 240, 0.18); border-radius: var(--r); }
+.list-row { background: var(--card); }
+
+/* Metallknöpfe */
+.btn-primary, .dc-start, .train-ok, .lt-save, .set-r.now .set-tick, .tr-check {
+  background: var(--brass-grad);
+  color: var(--brass-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -1px 0 rgba(0, 0, 0, 0.18), 0 8px 22px -10px rgba(142, 182, 240, 0.65);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.btn, .dc-start, .set-tick, .swap-btn, .tr-row, .day-card, .prog-card, .period button, .metric-toggle button, .chips button { transition: transform 0.16s var(--ease), filter 0.2s, background 0.25s var(--ease), color 0.25s var(--ease), box-shadow 0.25s var(--ease); }
+.btn:active, .dc-start:active, .set-tick:active, .swap-btn:active, .tr-row:active { transform: scale(0.97); filter: brightness(0.95); }
+.btn-secondary, .swap-btn { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--hi); }
+.btn-dashed { border-color: rgba(255, 255, 255, 0.1); border-radius: var(--r); transition: background 0.2s, color 0.2s; }
+.btn-dashed:active { background: rgba(255, 255, 255, 0.04); color: var(--text); }
+.btn-danger { border: 1px solid rgba(224, 122, 106, 0.2); }
+
+/* Startseite */
+.dc-main { padding: 22px 6px 22px 22px; gap: 7px; }
+.day-name { font-size: 32px; letter-spacing: 0.015em; }
+.dc-start { display: inline-flex; align-items: center; gap: 4px; padding: 0 12px 0 18px; min-height: 46px; font-size: 15px; }
+.dc-start svg { width: 16px; height: 16px; }
+.dc-edit { border-radius: 50%; }
+.dc-edit:active { background: rgba(255, 255, 255, 0.06); }
+.day-card.running { border-color: rgba(142, 182, 240, 0.35); box-shadow: var(--card-shadow), 0 0 0 1px rgba(142, 182, 240, 0.12), 0 18px 46px -22px rgba(142, 182, 240, 0.45); }
+
+/* Übungskarte und Eingabe */
+.ex-name { letter-spacing: 0.01em; }
+.ex-photo { border-color: rgba(255, 255, 255, 0.1); border-radius: 16px; background: rgba(255, 255, 255, 0.02); }
+.ex-photo.has { box-shadow: inset 0 0 0 1px var(--line), 0 8px 20px -10px rgba(0, 0, 0, 0.8); }
+.lt-in {
+  background: linear-gradient(180deg, #08090b, #0f1114);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55);
+  border-radius: var(--r-sm);
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.3s, color 0.3s;
+}
+.lt-in:focus { border-color: rgba(142, 182, 240, 0.7); box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55), 0 0 0 4px rgba(142, 182, 240, 0.14); }
+.set-tick { border-radius: var(--r-sm); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); }
+.set-r.now .set-tick, .set-r.done .set-tick { border-color: transparent; }
+.set-r.done .set-tick { background: linear-gradient(180deg, #a9dcb6, #7fbf90); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 6px 18px -8px rgba(147, 207, 162, 0.6); }
+.set-r.done .lt-in { background: var(--ok-soft); box-shadow: none; }
+.log-row { border-radius: 10px; }
+.log-row + .log-row { border-top-color: var(--line); }
+
+/* Geführtes Training */
+.tr-bar { gap: 5px; margin-top: 6px; }
+.tr-bar i { height: 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); transition: background 0.5s var(--ease), box-shadow 0.5s var(--ease); }
+.tr-bar i.on { background: linear-gradient(90deg, #7fbf90, #a9dcb6); }
+.tr-bar i.now { background: var(--brass-grad); box-shadow: 0 0 14px rgba(142, 182, 240, 0.55); animation: glow 2.4s ease-in-out infinite; }
+.ex-card.train { position: relative; border-color: rgba(142, 182, 240, 0.24); box-shadow: var(--card-shadow), 0 26px 60px -30px rgba(142, 182, 240, 0.35); overflow: hidden; }
+.ex-card.train::before { content: ""; position: absolute; inset: 0 0 auto; height: 1px; background: linear-gradient(90deg, transparent, rgba(200, 222, 252, 0.85), transparent); }
+.ex-card.train::after { content: ""; position: absolute; inset: -40% -20% auto; height: 60%; background: radial-gradient(closest-side, rgba(142, 182, 240, 0.1), transparent); pointer-events: none; }
+.ex-card.train > * { position: relative; z-index: 1; }
+.train-ok { min-height: 58px; border-radius: 18px; font-size: 16px; letter-spacing: 0.005em; }
+.tr-row { border-radius: 0; }
+.tr-row:active { background: rgba(255, 255, 255, 0.04); }
+.tr-row.done .tr-ic { box-shadow: inset 0 0 0 1px rgba(147, 207, 162, 0.25); }
+.tr-check { width: 84px; height: 84px; }
+.tr-check svg { width: 40px; height: 40px; }
+.tr-finish h2 { font-size: 40px; }
+
+/* Fortschritt */
+.period { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--hi); }
+.period button[aria-pressed="true"] { background: var(--text); color: var(--bg); box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.8); }
+.summary { padding: 22px; position: relative; overflow: hidden; }
+.summary::after { content: ""; position: absolute; right: -60px; top: -60px; width: 220px; height: 220px; background: radial-gradient(closest-side, rgba(147, 207, 162, 0.12), transparent); pointer-events: none; }
+.sum-val { font-size: 64px; letter-spacing: -0.02em; }
+.sum-val.up { background: linear-gradient(180deg, #c3ecca, #86c597); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sum-val.down { background: linear-gradient(180deg, #f2a596, #d86d5c); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.chg { border: 1px solid transparent; }
+.chg.up { border-color: rgba(147, 207, 162, 0.22); }
+.chg.down { border-color: rgba(224, 122, 106, 0.22); }
+.chart-box { background: linear-gradient(180deg, #08090b, #0d0f12); border: 1px solid var(--line); box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.5); }
+.kpi { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--hi); }
+.metric-toggle { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
+.search { background: rgba(255, 255, 255, 0.04); border-color: var(--line); box-shadow: inset 0 1px 0 var(--hi); }
+
+/* Sheets und Meldungen */
+.sheet-backdrop { background: rgba(0, 0, 0, 0.55); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.sheet { background: linear-gradient(180deg, #1b1e22, #121417 40%); border-top: 1px solid rgba(255, 255, 255, 0.09); border-radius: 30px 30px 0 0; box-shadow: 0 -30px 60px -20px rgba(0, 0, 0, 0.8); animation-duration: 0.34s; animation-timing-function: var(--ease); }
+.sheet-grip { width: 42px; background: rgba(255, 255, 255, 0.18); }
+.menu-list, .pick-list, .note-box, .new-ex { border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--hi); }
+.field { background: linear-gradient(180deg, #0d0f12, #14161a); border-color: rgba(255, 255, 255, 0.08); }
+.field:focus { box-shadow: 0 0 0 4px rgba(142, 182, 240, 0.14); }
+.toast { background: rgba(27, 30, 35, 0.88); color: var(--text); border: 1px solid rgba(255, 255, 255, 0.1); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: inset 0 1px 0 var(--hi), 0 18px 40px -12px rgba(0, 0, 0, 0.9); }
+
+/* ---------- Bewegung ---------- */
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+@keyframes arrive { from { opacity: 0; transform: translateX(34px) scale(0.98); } }
+@keyframes leave { to { opacity: 0; transform: translateX(-34px) scale(0.97); } }
+@keyframes pop { 0% { transform: scale(0.82); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
+@keyframes draw { from { stroke-dashoffset: 24; } }
+@keyframes line { from { stroke-dashoffset: 1; } }
+@keyframes glow { 50% { box-shadow: 0 0 22px rgba(142, 182, 240, 0.8); } }
+@keyframes ring { from { box-shadow: 0 0 0 0 rgba(142, 182, 240, 0.55); } to { box-shadow: 0 0 0 28px rgba(142, 182, 240, 0); } }
+@keyframes fadein { from { opacity: 0; } }
+
+#view.enter > *, #view.enter .section > * { animation: rise 0.55s var(--ease) both; }
+#view.enter > *:nth-child(2), #view.enter .section > *:nth-child(2) { animation-delay: 0.05s; }
+#view.enter > *:nth-child(3), #view.enter .section > *:nth-child(3) { animation-delay: 0.1s; }
+#view.enter > *:nth-child(4), #view.enter .section > *:nth-child(4) { animation-delay: 0.15s; }
+#view.enter > *:nth-child(5), #view.enter .section > *:nth-child(5) { animation-delay: 0.2s; }
+#view.enter > *:nth-child(6), #view.enter .section > *:nth-child(6) { animation-delay: 0.25s; }
+#view.enter > *:nth-child(n+7), #view.enter .section > *:nth-child(n+7) { animation-delay: 0.3s; }
+.ex-card.arrive { animation: arrive 0.48s var(--ease) both; }
+.ex-card.leave { animation: leave 0.24s ease-in forwards; pointer-events: none; }
+.set-r.just .set-tick { animation: pop 0.45s var(--ease); }
+.set-r.just .set-tick path { stroke-dasharray: 24; animation: draw 0.35s 0.06s var(--ease) both; }
+.set-r.just .lt-in { animation: fadein 0.4s ease both; }
+.chart-box .ln, .mini .ln { stroke-dasharray: 1; animation: line 1.1s var(--ease) both; }
+.chart-box path, .mini path { animation: fadein 0.9s 0.25s ease both; }
+.tr-finish .tr-check { animation: pop 0.6s var(--ease) both, ring 1.4s 0.2s ease-out 2; }
+.tr-finish h2, .tr-finish p, .tr-finish .btn { animation: rise 0.6s 0.15s var(--ease) both; }

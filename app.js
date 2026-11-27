@@ -131,19 +131,21 @@ const sessionFresh = () => !!S.session && Date.now() - S.session.touched < SESSI
 function touchSession() { if (S.session) { S.session.touched = Date.now(); saveSession(); } }
 function ensureSession(day) {
   if (S.session?.dayId === day.id && sessionFresh()) return S.session;
-  S.session = { dayId: day.id, since: startOfDay(Date.now()), touched: Date.now(), later: [], pick: null };
+  S.session = { dayId: day.id, since: startOfDay(Date.now()), touched: Date.now(), later: [], pick: null, swaps: {} };
   saveSession();
   return S.session;
 }
 function trainState(day) {
   const ses = ensureSession(day);
   const ids = day.exIds.filter(exById);
-  const entryOf = (id) => entriesFor(id).find((e) => e.date >= ses.since);
+  // Getauschte Übungen: der Plan bleibt gleich, eingetragen wird bei der heute gemachten Übung
+  const eff = (id) => (ses.swaps?.[id] && exById(ses.swaps[id]) ? ses.swaps[id] : id);
+  const entryOf = (id) => entriesFor(eff(id)).find((e) => e.date >= ses.since);
   const done = ids.filter(entryOf);
   const open = ids.filter((id) => !done.includes(id));
   let queue = [...open.filter((id) => !ses.later.includes(id)), ...ses.later.filter((id) => open.includes(id))];
   if (ses.pick && queue.includes(ses.pick)) queue = [ses.pick, ...queue.filter((id) => id !== ses.pick)];
-  return { ids, done, queue, entryOf };
+  return { ids, done, queue, entryOf, eff };
 }
 const isTrain = () => S.train && S.tab === 'training' && !!S.day;
 
@@ -205,6 +207,7 @@ function render() {
     setHeader('Alle Übungen', 'Fortschritt');
     v.innerHTML = viewProgress();
     renderExList();
+    countUp();
   } else if (isTrain()) {
     const day = dayById(S.day);
     setHeader('Training', day.name || 'Ohne Namen', true);
@@ -214,15 +217,30 @@ function render() {
     setHeader('Trainingstag', day.name || 'Ohne Namen', true);
     v.innerHTML = viewDay(day);
   } else {
-    setHeader('Kraftbuch', 'Training');
+    setHeader(new Date().toLocaleDateString('de-AT', { weekday: 'long', day: 'numeric', month: 'long' }), 'Training');
     v.innerHTML = viewDays();
   }
 }
 
+function animateIn() {
+  const v = $('#view'); if (reduceMotion()) return;
+  v.classList.remove('enter'); void v.offsetWidth; v.classList.add('enter');
+  clearTimeout(animateIn.t); animateIn.t = setTimeout(() => v.classList.remove('enter'), 900);
+}
+// Prozentzahlen zählen hoch
+function countUp() {
+  document.querySelectorAll('[data-count]').forEach((el) => {
+    const to = parseFloat(el.dataset.count); if (!Number.isFinite(to) || reduceMotion()) return;
+    const t0 = performance.now(), dur = 750;
+    const step = (t) => { const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3); el.textContent = pct(to * e); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
+}
 function go(tab, day = null, train = false) {
   S.tab = tab; S.day = day; S.train = train;
   lsSet(LS.tab, tab); lsSet(LS.day, day); lsSet(LS.train, train);
   render();
+  animateIn();
   window.scrollTo(0, 0);
 }
 
@@ -243,7 +261,7 @@ function viewDays() {
     const last = lastActivity(day);
     const active = S.session?.dayId === day.id && sessionFresh() ? trainState(day) : null;
     const running = active && active.done.length > 0 && active.queue.length > 0;
-    const meta = running ? `${active.done.length} von ${active.ids.length} erledigt · weiter mit ${exById(active.queue[0]).name}`
+    const meta = running ? `${active.done.length} von ${active.ids.length} erledigt · weiter mit ${exById(active.eff(active.queue[0])).name}`
       : `${plural(day.exIds.length, 'Übung', 'Übungen')}${last ? ' · zuletzt ' + relDay(last) : ''}`;
     html += `<div class="day-card${running ? ' running' : ''}">
       <button class="dc-main" data-act="start-day" data-day="${day.id}">
@@ -251,7 +269,7 @@ function viewDays() {
         <span class="day-meta">${esc(meta)}</span>
       </button>
       <button class="dc-edit" data-act="open-day" data-day="${day.id}" aria-label="${esc(day.name)} bearbeiten">${ICON.pen}</button>
-      <button class="dc-start" data-act="start-day" data-day="${day.id}" aria-label="${esc(day.name)} ${running ? 'fortsetzen' : 'starten'}">${running ? 'Weiter' : 'Starten'}</button>
+      <button class="dc-start" data-act="start-day" data-day="${day.id}" aria-label="${esc(day.name)} ${running ? 'fortsetzen' : 'starten'}">${running ? 'Weiter' : 'Starten'}${ICON.chev}</button>
     </div>`;
   }
   if (!S.state.days.length) html += `<div class="empty"><strong>Noch kein Trainingstag</strong>Leg unten deinen ersten Tag an, z. B. „Oberkörper“.</div>`;
@@ -274,10 +292,11 @@ function viewDay(day) {
 
 /* ---------- Training: immer die aktuelle Übung oben ---------- */
 function viewTrain(day) {
-  const { ids, done, queue, entryOf } = trainState(day);
+  const { ids, done, queue, entryOf, eff } = trainState(day);
+  const swapNote = (id) => (eff(id) !== id ? `<small class="tr-swap">statt ${esc(exById(id).name)}</small>` : '');
   const doneRow = (id) => {
     const e = entryOf(id);
-    return `<button class="tr-row done" data-act="entry" data-entry="${e.id}"><span class="tr-ic">${ICON.check}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${esc(setsText(e))}</span></button>`;
+    return `<button class="tr-row done" data-act="entry" data-entry="${e.id}"><span class="tr-ic">${ICON.check}</span><span class="tr-name">${esc(exById(eff(id)).name)}${swapNote(id)}</span><span class="tr-val">${esc(setsText(e))}</span></button>`;
   };
   let html = `<div class="tr-bar" role="img" aria-label="${done.length} von ${ids.length} Übungen erledigt">${ids.map((id) => `<i class="${done.includes(id) ? 'on' : id === queue[0] ? 'now' : ''}"></i>`).join('')}</div>`;
   if (!queue.length) {
@@ -285,10 +304,10 @@ function viewTrain(day) {
       <button class="btn btn-primary btn-block" data-act="train-end">Zur Übersicht</button>
       <button class="btn btn-ghost" data-act="train-again">Diesen Tag heute noch einmal trainieren</button></div>`;
   } else {
-    html += `<div class="tr-now"><span class="section-title">Jetzt · Übung ${done.length + 1} von ${ids.length}</span>${queue.length > 1 ? '<button class="tr-later" data-act="train-later">Später machen</button>' : ''}</div>${exCard(exById(queue[0]))}`;
+    html += `<div class="tr-now"><span class="section-title">Jetzt · Übung ${done.length + 1} von ${ids.length}</span>${queue.length > 1 ? '<button class="tr-later" data-act="train-later">Später machen</button>' : ''}</div>${exCard(exById(eff(queue[0])), queue[0])}`;
     if (queue.length > 1) html += `<div class="tr-sec"><h2 class="section-title">Danach</h2><div class="tr-list">${queue.slice(1).map((id, i) => {
-      const last = entriesFor(id)[0];
-      return `<button class="tr-row" data-act="train-pick" data-id="${id}"><span class="tr-ic">${picHTML(exById(id)) || `<b>${done.length + i + 2}</b>`}</span><span class="tr-name">${esc(exById(id).name)}</span><span class="tr-val">${((k) => (k ? `${k} ${k === 1 ? 'Satz' : 'Sätze'} notiert` : last ? esc(setText(setsOf(last)[0])) : ''))(setRows(id).filter((x) => x.ok).length)}</span></button>`;
+      const x = eff(id), last = entriesFor(x)[0];
+      return `<button class="tr-row" data-act="train-pick" data-id="${id}"><span class="tr-ic">${picHTML(exById(x)) || `<b>${done.length + i + 2}</b>`}</span><span class="tr-name">${esc(exById(x).name)}${swapNote(id)}</span><span class="tr-val">${((k) => (k ? `${k} ${k === 1 ? 'Satz' : 'Sätze'} notiert` : last ? esc(setText(setsOf(last)[0])) : ''))(setRows(x).filter((y) => y.ok).length)}</span></button>`;
     }).join('')}</div></div>`;
   }
   if (done.length) html += `<div class="tr-sec"><h2 class="section-title">Erledigt</h2><div class="tr-list">${done.map(doneRow).join('')}</div></div>`;
@@ -307,7 +326,15 @@ function refreshCard(card) {
   const b = card.querySelector('.train-ok'); if (b) b.textContent = okLabel(card.dataset.ex);
 }
 
-function exCard(ex) {
+const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+function redrawCard(card, justSet = -1) {
+  const id = card.dataset.ex, plan = card.dataset.plan || id;
+  $('#view').classList.remove('enter'); // sonst steigt die neu gezeichnete Karte noch einmal auf
+  card.outerHTML = exCard(exById(id), plan);
+  if (justSet >= 0) document.querySelector(`.ex-card[data-ex="${id}"]`)?.querySelectorAll('.set-r')[justSet]?.classList.add('just');
+}
+
+function exCard(ex, planId = ex.id) {
   const train = isTrain();
   const rows = setRows(ex.id);
   const cur = rows.findIndex((x) => !x.ok);
@@ -319,7 +346,7 @@ function exCard(ex) {
       <span class="lr-date">${relDay(e.date) === 'heute' ? 'Heute' : relDay(e.date) === 'gestern' ? 'Gestern' : dShort(e.date)}</span>
       <span class="lr-sets">${setsOf(e).map((x) => `<span>${esc(setText(x))}</span>`).join('')}</span>
     </button>`;
-  return `<section class="ex-card${train ? ' train' : ''}" data-ex="${ex.id}">
+  return `<section class="ex-card${train ? ' train' : ''}" data-ex="${ex.id}" data-plan="${planId}">
     <div class="ex-head">
       <button class="ex-photo${pic ? ' has' : ''}" data-act="photo" aria-label="${pic ? 'Foto vom Gerät ansehen' : 'Foto vom Gerät hinzufügen'}">
         ${pic || ICON.cam}
@@ -327,6 +354,9 @@ function exCard(ex) {
       <div class="ex-head-text">
         <h3 class="ex-name">${esc(ex.name)}</h3>
         <div class="ex-sub">${esc(ex.group || '')}${ex.note ? ' · ' + esc(ex.note) : ''}</div>
+        ${!train ? '' : planId !== ex.id
+          ? `<div class="swap-info">Heute statt <b>${esc(exById(planId)?.name || '')}</b> <button class="swap-btn" data-act="train-unswap">Zurück zum Plan</button></div>`
+          : '<button class="swap-btn" data-act="train-swap">⇄ Andere Übung</button>'}
       </div>
       <button class="more-btn" data-act="ex-menu" aria-label="Optionen für ${esc(ex.name)}">${ICON.more}</button>
       ${train ? '' : `<button class="drag-handle" aria-label="${esc(ex.name)} verschieben">${ICON.grip}</button>`}
@@ -401,7 +431,7 @@ function viewProgress() {
       <div class="eyebrow">Steigerung in ${esc(p.label)}</div>
       ${avg == null
         ? `<div class="sum-val flat">–</div><p class="sum-sub">Noch zu wenig Einträge in diesem Zeitraum. Sobald eine Übung mindestens zwei Einträge hat, siehst du hier, wie stark du zulegst.</p>`
-        : `<div class="sum-val ${trend(avg)}">${pct(avg)}</div><p class="sum-sub">Durchschnitt über ${plural(all.length, 'Übung', 'Übungen')} · ${ups} davon gesteigert</p>${points(sum)}`}
+        : `<div class="sum-val ${trend(avg)}" data-count="${avg}">${pct(avg)}</div><p class="sum-sub">Durchschnitt über ${plural(all.length, 'Übung', 'Übungen')} · ${ups} davon gesteigert</p>${points(sum)}`}
     </div>
     <input type="search" class="search" id="exSearch" placeholder="Übung suchen" value="${esc(exQuery)}" autocomplete="off">
     <div id="exList"></div>`;
@@ -446,7 +476,7 @@ function miniChart(vals, t) {
   return `<svg class="mini" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
     <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".25"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
     <path d="M${pts[0][0]},${H} L${line.split(' ').join(' L')} L${last[0]},${H} Z" fill="url(#${id})"/>
-    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    <polyline class="ln" pathLength="1" points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
   </svg>`;
 }
 
@@ -469,7 +499,7 @@ function chart(dates, lines, unit, color = 'var(--brass)') {
     if (!p.length) return '';
     const c = k === 0 ? color : 'var(--muted)';
     const end = p[p.length - 1];
-    return (p.length > 1 ? `<polyline points="${p.map((q) => q.map((v) => v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="${c}" stroke-width="${k ? 1.8 : 2.2}" stroke-linejoin="round" stroke-linecap="round"${k ? ' stroke-dasharray="5 4"' : ''}/>` : '')
+    return (p.length > 1 ? `<polyline points="${p.map((q) => q.map((v) => v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="${c}" stroke-width="${k ? 1.8 : 2.2}" stroke-linejoin="round" stroke-linecap="round"${k ? ' stroke-dasharray="5 4"' : ' class="ln" pathLength="1"'}/>` : '')
       + p.map((q) => `<circle cx="${q[0]}" cy="${q[1]}" r="2.6" fill="var(--bg)" stroke="${c}" stroke-width="1.6"/>`).join('')
       + (k ? '' : `<circle cx="${end[0]}" cy="${end[1]}" r="9" fill="${c}" opacity=".18"/><circle cx="${end[0]}" cy="${end[1]}" r="4.2" fill="${c}"/>`);
   };
@@ -507,25 +537,34 @@ function confirmSheet(title, text, ok, danger = false) {
   });
 }
 
-let pickQuery = '';
-function pickExercise(day) {
+let pickQuery = '', pickOpts = {};
+function pickExercise(day, opts = {}) {
   pickQuery = '';
+  pickOpts = { title: 'Übung hinzufügen', eyebrow: day.name, exclude: day.exIds, group: '', ...opts };
   return new Promise((resolve) => {
-    openSheet(`${sheetHead('Übung hinzufügen', day.name)}
-      <input type="search" class="field" id="pickSearch" placeholder="Name eintippen, z. B. Butterfly" autocomplete="off">
+    openSheet(`${sheetHead(pickOpts.title, pickOpts.eyebrow)}
+      <button class="btn btn-secondary btn-block" id="newExBtn" data-act="pick-new-form">+ Neue Übung anlegen</button>
+      <div class="new-ex" id="newExForm" hidden>
+        <label class="lbl">Name der neuen Übung<input class="field" id="newExName" autocomplete="off" enterkeyhint="done" placeholder="z. B. Kurzhantel Curls"></label>
+        <div class="lbl">Muskelgruppe<div class="chips" id="groupChips"></div></div>
+        <p class="err" id="newExErr" hidden></p>
+        <button class="btn btn-primary btn-block" data-act="pick-new-save">Anlegen und auswählen</button>
+      </div>
+      <input type="search" class="field" id="pickSearch" placeholder="Oder vorhandene Übung suchen" autocomplete="off">
       <div class="pick-list" id="pickList" data-day="${day.id}"></div>`, { onClose: (v) => resolve(typeof v === 'string' ? v : null) });
     renderPickList();
-    setTimeout(() => $('#pickSearch')?.focus(), 250);
   });
 }
 function renderPickList() {
   const box = $('#pickList'); if (!box) return;
-  const day = dayById(box.dataset.day);
   const q = pickQuery.trim(), ql = q.toLowerCase();
+  const grp = pickOpts.group && pickOpts.group !== 'Sonstige' ? pickOpts.group : '';
   const match = (e) => !ql || e.name.toLowerCase().includes(ql) || (e.group || '').toLowerCase().includes(ql);
-  const pool = S.state.exercises.filter((e) => !day.exIds.includes(e.id) && match(e)).sort((a, b) => a.name.localeCompare(b.name, 'de'));
-  const archived = pool.filter((e) => !inPlan(e.id));
-  const other = pool.filter((e) => inPlan(e.id));
+  const pool = S.state.exercises.filter((e) => !pickOpts.exclude.includes(e.id) && match(e)).sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const same = grp ? pool.filter((e) => e.group === grp) : [];
+  const rest = pool.filter((e) => !same.includes(e));
+  const archived = rest.filter((e) => !inPlan(e.id));
+  const other = rest.filter((e) => inPlan(e.id));
   const exact = S.state.exercises.some((e) => e.name.toLowerCase() === ql);
   const item = (e, archivedItem) => {
     const h = entriesFor(e.id); const last = h[0];
@@ -534,6 +573,7 @@ function renderPickList() {
     return `<button data-act="pick" data-ex="${e.id}"><span class="pk-main"><span>${esc(e.name)}</span><span class="g">${esc(info)}${where ? ' · in ' + esc(where) : ''}</span></span>${photos.get(e.id) ? `<span class="thumb sm"><img src="${photos.get(e.id)}" alt=""></span>` : ''}</button>`;
   };
   let html = q && !exact ? `<button data-act="pick-new"><span class="pick-new">+ „${esc(q)}“ als neue Übung anlegen</span></button>` : '';
+  if (same.length) html += `<div class="pick-sec">Gleiche Muskelgruppe · ${esc(grp)}</div>` + same.map((e) => item(e, !inPlan(e.id))).join('');
   if (archived.length) html += `<div class="pick-sec">Archiv · deine Daten sind noch da</div>` + archived.map((e) => item(e, true)).join('');
   if (other.length) html += `<div class="pick-sec">Aus anderen Trainingstagen</div>` + other.map((e) => item(e, false)).join('');
   if (!html) html = `<div class="chart-empty">Tippe oben den Namen deiner Übung ein.</div>`;
@@ -570,7 +610,7 @@ function openProgress(id) {
     <div class="detail-chg">
       ${c == null
         ? `<span class="sum-val flat">–</span><span class="sum-sub">In ${esc(P.label)} zu wenig Einträge für einen Vergleich.</span>`
-        : `<span class="sum-val ${t}">${pct(c)}</span><span class="sum-sub">${m === 'weight' ? 'Gewicht' : m === 'reps' ? 'Wiederholungen' : 'gesamt'} in ${esc(P.label)}</span>`}
+        : `<span class="sum-val ${t}" data-count="${c}">${pct(c)}</span><span class="sum-sub">${m === 'weight' ? 'Gewicht' : m === 'reps' ? 'Wiederholungen' : 'gesamt'} in ${esc(P.label)}</span>`}
     </div>
     ${points(s)}
     <div class="chart-box">${s.pts.length ? chart(s.pts.map((x) => x.date), lines, unit, color) : chart([], [], unit)}</div>
@@ -678,7 +718,7 @@ function tickSet(card, i) {
   const exId = card.dataset.ex;
   const rows = setRows(exId), x = rows[i]; if (!x) return;
   if (x.ok) { // wieder öffnen
-    editDraft(exId).s[i].ok = false; saveDrafts(); card.outerHTML = exCard(exById(exId)); return;
+    editDraft(exId).s[i].ok = false; saveDrafts(); redrawCard(card); return;
   }
   if (x.er == null) { toast(`Trag bei Satz ${i + 1} die Wiederholungen ein`); card.querySelector(`.lt-in[data-f="r"][data-i="${i}"]`)?.focus(); return; }
   const d = editDraft(exId);
@@ -688,7 +728,7 @@ function tickSet(card, i) {
   if (navigator.vibrate) try { navigator.vibrate(12); } catch {}
   if (rows.every((y, k) => k === i || y.ok)) return finishExercise(card);
   document.activeElement?.blur?.();
-  card.outerHTML = exCard(exById(exId));
+  redrawCard(card, i);
 }
 function finishExercise(card) {
   const exId = card.dataset.ex;
@@ -705,12 +745,13 @@ function finishExercise(card) {
   const note = prevBest && maxW(entry) > prevBest ? `Neuer Bestwert: ${fmt(maxW(entry))} kg` : gain > 0.05 ? `Gesteigert: ${pct(gain)} zum letzten Mal` : '';
   document.activeElement?.blur?.();
   if (train) {
-    S.session.pick = null; S.session.later = S.session.later.filter((x) => x !== exId); touchSession();
+    const planId = card.dataset.plan || exId;
+    S.session.pick = null; S.session.later = S.session.later.filter((x) => x !== planId); touchSession();
     const next = trainState(curDay()).queue[0];
-    render(); window.scrollTo(0, 0);
-    toast(note || (next ? `Gespeichert. Weiter: ${exById(next).name}` : 'Gespeichert'));
+    const show = () => { render(); window.scrollTo(0, 0); $('.ex-card.train')?.classList.add('arrive'); toast(note || (next ? `Gespeichert. Weiter: ${exById(next).name}` : 'Gespeichert')); };
+    if (reduceMotion() || !card.isConnected) show(); else { card.classList.add('leave'); setTimeout(show, 240); }
   } else {
-    card.outerHTML = exCard(exById(exId));
+    redrawCard(card);
     toast(note || 'Gespeichert');
   }
 }
@@ -768,9 +809,24 @@ const actions = {
     S.session.pick = null; S.session.later = [...S.session.later.filter((x) => x !== id), id]; touchSession();
     render(); window.scrollTo(0, 0);
   },
+  'train-swap': async (el) => {
+    const planId = el.closest('.ex-card').dataset.plan, day = curDay(), planned = exById(planId);
+    const used = Object.values(S.session.swaps || {});
+    const id = await pickExercise(day, { title: 'Andere Übung', eyebrow: `Heute statt ${planned.name}`, exclude: [...day.exIds, ...used], group: planned.group });
+    if (!id) return;
+    S.session.swaps = { ...(S.session.swaps || {}), [planId]: id };
+    S.session.pick = planId; touchSession();
+    render(); window.scrollTo(0, 0);
+    toast(`Heute ${exById(id).name} statt ${planned.name}. Dein Plan bleibt gleich`);
+  },
+  'train-unswap': (el) => {
+    const planId = el.closest('.ex-card').dataset.plan;
+    delete S.session.swaps[planId]; touchSession();
+    render(); window.scrollTo(0, 0);
+  },
   'train-pick': (el) => { S.session.pick = el.dataset.id; touchSession(); render(); window.scrollTo(0, 0); },
-  'train-again': () => { S.session = { dayId: S.day, since: Date.now(), touched: Date.now(), later: [], pick: null }; saveSession(); render(); window.scrollTo(0, 0); },
-  'train-end': () => { const ids = curDay().exIds; flushDrafts((id) => ids.includes(id)); S.session = null; saveSession(); closeSheet(); go('training'); },
+  'train-again': () => { S.session = { dayId: S.day, since: Date.now(), touched: Date.now(), later: [], pick: null, swaps: {} }; saveSession(); render(); window.scrollTo(0, 0); },
+  'train-end': () => { const ids = [...curDay().exIds, ...Object.values(S.session?.swaps || {})]; flushDrafts((id) => ids.includes(id)); S.session = null; saveSession(); closeSheet(); go('training'); },
   'train-plan': () => { closeSheet(); go('training', S.day); },
   'day-add': () => {
     const day = { id: uid(), name: `Tag ${S.state.days.length + 1}`, exIds: [] };
@@ -814,8 +870,26 @@ const actions = {
   },
   pick: (el) => closeSheet(el.dataset.ex),
   'pick-new': () => {
-    const name = pickQuery.trim(); if (!name) return;
-    const e = { id: uid(), name, group: 'Sonstige', note: '' };
+    if (!pickQuery.trim()) return;
+    actions['pick-new-form']();
+  },
+  'pick-new-form': () => {
+    editGroup = pickOpts.group || 'Sonstige';
+    $('#groupChips').innerHTML = GROUPS.map((g) => `<button data-act="group" data-g="${esc(g)}" aria-pressed="${g === editGroup}">${esc(g)}</button>`).join('');
+    $('#newExForm').hidden = false; $('#newExBtn').hidden = true;
+    const i = $('#newExName'); i.value = pickQuery.trim(); i.focus();
+  },
+  'pick-new-save': () => {
+    const name = $('#newExName').value.trim().replace(/\s+/g, ' ');
+    const err = $('#newExErr');
+    if (!name) { err.textContent = 'Gib der Übung einen Namen.'; err.hidden = false; $('#newExName').focus(); return; }
+    const same = S.state.exercises.find((e) => e.name.toLowerCase() === name.toLowerCase());
+    if (same) {
+      if (pickOpts.exclude.includes(same.id)) { err.textContent = `„${same.name}“ ist heute schon dran. Nimm einen anderen Namen.`; err.hidden = false; return; }
+      toast(`„${same.name}“ gab es schon, sie ist jetzt ausgewählt`);
+      return closeSheet(same.id);
+    }
+    const e = { id: uid(), name, group: editGroup || 'Sonstige', note: '' };
     S.state.exercises.push(e); saveState(); closeSheet(e.id);
   },
   'ex-menu': (el) => {
@@ -853,9 +927,9 @@ const actions = {
     Object.assign(exById(id), { name, group: editGroup, note: $('#exNoteIn').value.trim() });
     saveState(); closeSheet(); render(); toast('Gespeichert');
   },
-  'ex-open': (el) => openProgress(el.dataset.ex),
-  period: (el) => { S.period = el.dataset.p; lsSet(LS.period, S.period); render(); if (el.dataset.ex) openProgress(el.dataset.ex); },
-  metric: (el) => { S.metric = el.dataset.m; lsSet(LS.metric, S.metric); openProgress(el.dataset.ex); },
+  'ex-open': (el) => { openProgress(el.dataset.ex); countUp(); },
+  period: (el) => { S.period = el.dataset.p; lsSet(LS.period, S.period); render(); if (el.dataset.ex) openProgress(el.dataset.ex); countUp(); },
+  metric: (el) => { S.metric = el.dataset.m; lsSet(LS.metric, S.metric); openProgress(el.dataset.ex); countUp(); },
 
   // Einträge
   save: (el) => { const card = el.closest('.ex-card'); const i = setRows(card.dataset.ex).findIndex((x) => !x.ok); i < 0 ? finishExercise(card) : tickSet(card, i); },
@@ -863,15 +937,15 @@ const actions = {
   'set-add': (el) => {
     const card = el.closest('.ex-card'), id = card.dataset.ex, n = setRows(id).length;
     if (n >= 8) return toast('Mehr als 8 Sätze gehen nicht');
-    editDraft(id).n = n + 1; saveDrafts(); card.outerHTML = exCard(exById(id));
+    editDraft(id).n = n + 1; saveDrafts(); redrawCard(card);
   },
   'set-drop': (el) => {
     const card = el.closest('.ex-card'), id = card.dataset.ex, n = setRows(id).length;
     const d = editDraft(id); d.n = n - 1; d.s.length = Math.min(d.s.length, n - 1); saveDrafts();
     if (setRows(id).every((x) => x.ok)) return finishExercise(card);
-    card.outerHTML = exCard(exById(id));
+    redrawCard(card);
   },
-  archive: (el) => { const id = exOf(el); S.open.has(id) ? S.open.delete(id) : S.open.add(id); const c = el.closest('.ex-card'); c.outerHTML = exCard(exById(id)); },
+  archive: (el) => { const id = exOf(el); S.open.has(id) ? S.open.delete(id) : S.open.add(id); redrawCard(el.closest('.ex-card')); },
   entry: (el) => {
     const e = S.entries.find((x) => x.id === el.dataset.entry); if (!e) return;
     openEntry(e);
@@ -910,6 +984,7 @@ document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.id === 'exSearch') { exQuery = t.value; renderExList(); }
   else if (t.id === 'pickSearch') { pickQuery = t.value; renderPickList(); }
+  else if (t.id === 'newExName') { const e = $('#newExErr'); if (e) e.hidden = true; }
   else if (t.classList.contains('lt-in')) {
     const clean = t.value.replace(t.dataset.f === 'w' ? /[^\d.,]/g : /[^\d]/g, '');
     if (clean !== t.value) t.value = clean;
@@ -1008,6 +1083,7 @@ document.addEventListener('keydown', (ev) => {
     if (i < ins.length - 1) ins[i + 1].focus(); else ev.target.blur();
   }
   if (ev.key === 'Enter' && ev.target.id === 'dayNameIn') actions['rename-save']();
+  if (ev.key === 'Enter' && ev.target.id === 'newExName') { ev.preventDefault(); actions['pick-new-save'](); }
   if (ev.key === 'Enter' && ev.target.id === 'pickSearch') $('#pickList button')?.click();
 });
 
@@ -1057,6 +1133,7 @@ async function importData(file) {
 }
 
 /* ================= Start ================= */
+requestAnimationFrame(() => animateIn());
 // Ein altes Training (länger als 6 Stunden her) nicht wieder öffnen
 function leaveStale() { if (S.train && !sessionFresh()) { S.session = null; saveSession(); S.train = false; lsSet(LS.train, false); if (S.tab === 'training') { S.day = null; lsSet(LS.day, null); } return true; } return false; }
 const flushOld = () => flushDrafts((id, d) => !draftFresh(d));
